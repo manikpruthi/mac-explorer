@@ -1,0 +1,21 @@
+# Build output
+build/
+DerivedData/
+
+# Stray archives outside release/ (release artifacts are committed for easy install)
+*.dmg
+*.zip
+!release/*.dmg
+!release/*.zip
+
+# Xcode user state
+*.xcuserdata/
+*.xcworkspace/xcuserdata/
+project.xcworkspace/xcuserdata/
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Local scratch
+*.log
