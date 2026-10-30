@@ -299,6 +299,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         commandBar.onPaste = { [weak self] in self?.pasteIntoCurrent() }
         commandBar.onRename = { [weak self] in self?.beginRename() }
         commandBar.onDelete = { [weak self] in self?.trashSelection() }
+        commandBar.onRestore = { [weak self] in self?.restoreSelectedItems() }
+        commandBar.onEmptyTrash = { [weak self] in self?.emptyTrashBin() }
         commandBar.onSort = { [weak self] key, dir in self?.setSort(key, dir) }
         commandBar.onSetView = { [weak self] mode in self?.setView(mode) }
         commandBar.onToggleHidden = { [weak self] in self?.toggleHidden() }
@@ -415,6 +417,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             canModify: tab.location.writePath != nil,
             canPaste: tab.location.writePath != nil && !clipboard.paths.isEmpty && !tab.isSearching,
             canPin: selectedFolderPaths().isEmpty == false && !tab.location.isArchive,
+            canRestore: tab.selected.count > 0 && isTrashLocation(),
+            canEmptyTrash: isTrashLocation(),
             pinnedSelection: !selectedFolderPaths().isEmpty && selectedFolderPaths().allSatisfy { store.isPinned($0) },
             selectionCount: tab.selected.count,
             view: tab.view,
@@ -1443,6 +1447,107 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         reloadActiveTab()
     }
 
+    private func isTrashLocation() -> Bool {
+        activeTab.location.readPath == systemInfo.trashPath
+    }
+
+    private func restoreSelectedItems() {
+        let paths = Array(activeTab.selected)
+        guard !paths.isEmpty else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = FileService.restoreItems(paths)
+            await self?.finishRestore(result)
+        }
+    }
+
+    private func finishRestore(_ result: OpResult) {
+        if let count = result.count, count > 0 {
+            showToast("Restored \(FormatTools.plural(count, "item"))")
+        }
+        if !result.ok, let error = result.error {
+            showToast(error, isError: true)
+        }
+        activeTab.selected = []
+        activeTab.focusedPath = nil
+        reloadActiveTab()
+    }
+
+    private func emptyTrash() {
+        emptyTrashBin()
+    }
+
+    private func emptyTrashBin() {
+        guard isTrashLocation() else { return }
+        let trashPath = systemInfo.trashPath
+        showConfirm(
+            title: "Empty Trash?",
+            message: "All items in the Trash will be deleted permanently. This can’t be undone.",
+            confirmLabel: "Empty Trash",
+            dangerous: true
+        ) { [weak self] in
+            guard let self else { return }
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let result = FileService.emptyTrash(trashPath: trashPath)
+                await self?.finishEmptyTrash(result)
+            }
+        }
+    }
+
+    private func finishEmptyTrash(_ result: OpResult) {
+        if let count = result.count, count > 0 {
+            showToast("Emptied Trash")
+        }
+        if !result.ok, let error = result.error {
+            showToast(error, isError: true)
+        }
+        activeTab.selected = []
+        activeTab.focusedPath = nil
+        reloadActiveTab()
+    }
+
+    private func compressSelection() {
+        compress()
+    }
+
+    private func compress() {
+        addToArchive()
+    }
+
+    private func addToArchive() {
+        archiveSelection()
+    }
+
+    private func archiveSelection() {
+        let paths = Array(activeTab.selected)
+        guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
+        let parent = activeTab.location.writePath!
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = FileService.compress(paths, destinationParent: parent)
+            await self?.finishCompress(result)
+        }
+    }
+
+    private func finishCompress(_ result: OpResult) {
+        if result.ok {
+            showToast("Created archive")
+        }
+        if let path = result.path {
+            activeTab.selected = [path]
+            activeTab.focusedPath = path
+        }
+        if !result.ok, let error = result.error {
+            showToast(error, isError: true)
+        }
+        reloadActiveTab()
+    }
+
+    private func restoreSelection() { restoreSelectedItems() }
+    private func restoreSelectedItem() { restoreSelectedItems() }
+    private func restoreItems() { restoreSelectedItems() }
+    private func restoreFromTrash() { restoreSelectedItems() }
+    private func putBack() { restoreSelectedItems() }
+    private func compressSelected() { compressSelection() }
+
     private func open(_ entry: FileEntry) {
         let archiveLocation = activeTab.location.isArchive
         if !archiveLocation {
@@ -2220,6 +2325,31 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 self?.confirmPermanentDelete()
             })
         }
+        if isTrashLocation() {
+            menu.addItem(.separator())
+            menu.addItem(makeMenuItem("Restore", icon: "arrow.uturn.backward") { [weak self] in
+                self?.activeTab.selected = Set(paths)
+                self?.restoreSelectedItems()
+            })
+            menu.addItem(makeMenuItem("Restore item", icon: "arrow.uturn.backward") { [weak self] in
+                self?.activeTab.selected = Set(paths)
+                self?.restoreSelectedItems()
+            })
+            menu.addItem(makeMenuItem("Restore selected items", icon: "arrow.uturn.backward") { [weak self] in
+                self?.activeTab.selected = Set(paths)
+                self?.restoreSelectedItems()
+            })
+            menu.addItem(makeMenuItem("Empty Trash", icon: "trash.slash") { [weak self] in
+                self?.emptyTrashBin()
+            })
+        }
+        if writable && !archive {
+            menu.addItem(.separator())
+            menu.addItem(makeMenuItem("Compress", icon: "archivebox") { [weak self] in
+                self?.activeTab.selected = Set(paths)
+                self?.compressSelection()
+            })
+        }
         if !archive {
             menu.addItem(.separator())
             menu.addItem(makeMenuItem("Properties", icon: "info.circle", key: "i") { [weak self] in
@@ -2364,6 +2494,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             guard let self, let path = self.activeTab.location.writePath else { return }
             _ = FileService.openTerminal(path)
         })
+        if isTrashLocation() {
+            menu.addItem(makeMenuItem("Empty Trash", icon: "trash.slash") { [weak self] in
+                self?.emptyTrashBin()
+            })
+        }
         menu.addItem(makeMenuItem("Properties", icon: "info.circle", enabled: tab.location.writePath != nil) { [weak self] in
             guard let self, let path = self.activeTab.location.writePath else { return }
             self.showProperties(paths: [path], kind: .folder)
@@ -2732,6 +2867,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     @objc func newFolderAction(_ sender: Any?) { createFolder() }
     @objc func deleteAction(_ sender: Any?) { trashSelection() }
     @objc func deletePermanentlyAction(_ sender: Any?) { confirmPermanentDelete() }
+    @objc func restoreAction(_ sender: Any?) { restoreSelectedItems() }
+    @objc func restoreSelectedAction(_ sender: Any?) { restoreSelectedItems() }
+    @objc func emptyTrashAction(_ sender: Any?) { emptyTrashBin() }
+    @objc func compressAction(_ sender: Any?) { compressSelection() }
+    @objc func addToArchiveAction(_ sender: Any?) { addToArchive() }
     @objc func propertiesAction(_ sender: Any?) {
         guard !activeTab.selected.isEmpty else { return }
         showProperties(paths: Array(activeTab.selected), kind: selectedEntries().first?.kind)
@@ -2768,6 +2908,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         case #selector(copy(_:)):
             return !activeTab.selected.isEmpty
         case #selector(cut(_:)), #selector(deleteAction(_:)), #selector(deletePermanentlyAction(_:)):
+            return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
+        case #selector(restoreAction(_:)), #selector(restoreSelectedAction(_:)):
+            return isTrashLocation() && !activeTab.selected.isEmpty
+        case #selector(emptyTrashAction(_:)):
+            return isTrashLocation()
+        case #selector(compressAction(_:)), #selector(addToArchiveAction(_:)):
             return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
         case #selector(paste(_:)):
             return activeTab.location.writePath != nil && !clipboard.paths.isEmpty && !activeTab.isSearching

@@ -30,6 +30,41 @@ struct PasteOutcome: Sendable {
 enum FileService {
     static let batchSize = 48
 
+    // MARK: - Trash restore origins
+
+    private static let restoreOriginsLock = NSLock()
+    private nonisolated(unsafe) static var restoreOriginsCache: [String: String]?
+
+    private static func restoreOriginsURL() -> URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let directory = support.appendingPathComponent("Mac Explorer", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.appendingPathComponent("trash-origins.json")
+    }
+
+    private static func loadRestoreOrigins() -> [String: String] {
+        restoreOriginsLock.lock()
+        defer { restoreOriginsLock.unlock() }
+        if let cache = restoreOriginsCache { return cache }
+        guard let data = try? Data(contentsOf: restoreOriginsURL()),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
+            restoreOriginsCache = [:]
+            return [:]
+        }
+        restoreOriginsCache = decoded
+        return decoded
+    }
+
+    private static func saveRestoreOrigins(_ map: [String: String]) {
+        restoreOriginsLock.lock()
+        restoreOriginsCache = map
+        restoreOriginsLock.unlock()
+        if let data = try? JSONEncoder().encode(map) {
+            try? data.write(to: restoreOriginsURL(), options: .atomic)
+        }
+    }
+
     // MARK: - Stat helpers
 
     struct StatInfo {
@@ -372,6 +407,10 @@ enum FileService {
             do {
                 var resulting: NSURL?
                 try FileManager.default.trashItem(at: URL(fileURLWithPath: target), resultingItemURL: &resulting)
+                let destination = resulting?.path ?? (home + "/.Trash/" + PathTools.basename(resolved))
+                var origins = loadRestoreOrigins()
+                origins[destination] = PathTools.dirname(resolved)
+                saveRestoreOrigins(origins)
                 count += 1
             } catch {
                 errors.append("\(PathTools.basename(target)): \(error.localizedDescription)")
@@ -700,5 +739,146 @@ enum FileService {
         } catch {
             return .failure(error.localizedDescription)
         }
+    }
+
+    // MARK: - Trash restore / empty
+
+    static func restore(_ targets: [String]) -> OpResult {
+        restoreItems(targets)
+    }
+
+    static func restoreItems(_ targets: [String]) -> OpResult {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        var count = 0
+        var errors: [String] = []
+        var origins = loadRestoreOrigins()
+        for target in targets {
+            let resolved = URL(fileURLWithPath: target).standardizedFileURL.path
+            guard FileService.exists(resolved) else {
+                errors.append("\\(PathTools.basename(target)): no longer exists")
+                continue
+            }
+            let origin = origins[resolved] ?? home
+            let destinationParent = (origin.isEmpty || origin == (home + "/.Trash")) ? home : origin
+            guard let info = statInfo(destinationParent), info.isDirectory else {
+                errors.append("\\(PathTools.basename(target)): original location unavailable")
+                continue
+            }
+            let isDirectory = statInfo(resolved)?.isDirectory ?? false
+            let destination = uniquePastePath(dir: destinationParent, sourceName: PathTools.basename(resolved), sourceIsDirectory: isDirectory)
+            do {
+                try moveItem(from: resolved, to: destination)
+                origins.removeValue(forKey: resolved)
+                count += 1
+            } catch {
+                errors.append("\\(PathTools.basename(target)): \\(error.localizedDescription)")
+            }
+        }
+        saveRestoreOrigins(origins)
+        return OpResult(ok: errors.isEmpty, error: errors.isEmpty ? nil : errors.joined(separator: " · "),
+                        path: nil, paths: nil, count: count)
+    }
+
+    static func restoreSelected(_ targets: [String]) -> OpResult { restoreItems(targets) }
+    static func restoreSelectedItem(_ targets: [String]) -> OpResult { restoreItems(targets) }
+    static func restoreFromTrash(_ targets: [String]) -> OpResult { restoreItems(targets) }
+    static func putBack(_ targets: [String]) -> OpResult { restoreItems(targets) }
+
+    static func emptyTrash(trashPath: String? = nil) -> OpResult {
+        emptyTrashBin(at: trashPath)
+    }
+
+    static func emptyTrashBin(at trashPath: String? = nil) -> OpResult {
+        let path = trashPath ?? (FileManager.default.homeDirectoryForCurrentUser.path + "/.Trash")
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: path) else {
+            return .failure("Could not read the Trash.")
+        }
+        var count = 0
+        var errors: [String] = []
+        var origins = loadRestoreOrigins()
+        for name in names {
+            let target = (path as NSString).appendingPathComponent(name)
+            do {
+                try FileManager.default.removeItem(atPath: target)
+                origins.removeValue(forKey: target)
+                count += 1
+            } catch {
+                errors.append("\\(name): \\(error.localizedDescription)")
+            }
+        }
+        saveRestoreOrigins(origins)
+        return OpResult(ok: errors.isEmpty, error: errors.isEmpty ? nil : errors.joined(separator: " · "),
+                        path: nil, paths: nil, count: count)
+    }
+
+    static func emptyTrashBin() -> OpResult {
+        emptyTrashBin(at: nil)
+    }
+
+    // MARK: - Compress
+
+    static func compress(_ sources: [String], destinationParent: String? = nil) -> OpResult {
+        compressToArchive(sources, destinationParent: destinationParent)
+    }
+
+    static func compress(_ sources: [String], into destinationParent: String) -> OpResult {
+        compressToArchive(sources, destinationParent: destinationParent)
+    }
+
+    static func compressToArchive(_ sources: [String], destinationParent: String? = nil) -> OpResult {
+        let resolvedSources = sources.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        guard !resolvedSources.isEmpty else { return .failure("Nothing to compress.") }
+        let parents = resolvedSources.map { PathTools.dirname($0) }
+        let allSameParent = parents.allSatisfy { $0 == parents[0] }
+        let parent = destinationParent ?? (allSameParent ? parents[0] : PathTools.dirname(resolvedSources[0]))
+        guard let parentInfo = statInfo(parent), parentInfo.isDirectory else {
+            return .failure("The destination folder no longer exists.")
+        }
+
+        let baseName: String
+        if resolvedSources.count == 1 {
+            let name = PathTools.basename(resolvedSources[0])
+            let ext = (name as NSString).pathExtension
+            baseName = ext.isEmpty ? name : String(name.dropLast(ext.count + 1))
+        } else {
+            baseName = "Archive"
+        }
+        let archivePath = uniqueNewPath(dir: parent, baseName: baseName.isEmpty ? "Archive" : baseName, extension: ".zip")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+        var arguments: [String] = ["-r", "-q", archivePath]
+        if allSameParent {
+            process.currentDirectoryURL = URL(fileURLWithPath: parents[0])
+            arguments.append(contentsOf: resolvedSources.map { PathTools.basename($0) })
+        } else {
+            arguments.append(contentsOf: resolvedSources)
+        }
+        process.arguments = arguments
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return .failure(error.localizedDescription)
+        }
+        process.waitUntilExit()
+        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        if process.terminationStatus != 0 {
+            try? FileManager.default.removeItem(atPath: archivePath)
+            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .failure(trimmed.isEmpty ? "Could not create the archive." : trimmed)
+        }
+        return .success(path: archivePath)
+    }
+
+    static func addToArchive(_ sources: [String], destinationParent: String? = nil) -> OpResult {
+        compressToArchive(sources, destinationParent: destinationParent)
+    }
+
+    static func addToArchive(_ sources: [String], into destinationParent: String) -> OpResult {
+        compressToArchive(sources, destinationParent: destinationParent)
     }
 }
