@@ -52,7 +52,8 @@ rewrite of Explorer Neo 1.3.0, built against the same behavioral contract
   like Finder. `Space` or `Esc` closes it, arrow keys browse the folder, and `Enter` opens the
   previewed file. The context menu also offers Quick Look, though the `Space` shortcut is faster.
 - **Real file operations** — create folder/text file, inline rename, copy/cut/paste with Windows-style
-  unique names, move to Trash, permanent delete (confirmed), recursive properties, Show in Finder,
+  unique names, move to Trash, restore and empty Trash, compress to ZIP, permanent delete (confirmed),
+  recursive properties, Show in Finder,
   and Open in Terminal. The context menu also offers **Open with**, including a compatible-app
   submenu and an “Other…” application chooser.
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
@@ -133,6 +134,7 @@ Local network access uses `NSLocalNetworkUsageDescription` and the `_smb._tcp` B
 | `⌘⇧N` | New folder |
 | `F2` | Rename |
 | `⌘⌫` or `Delete` | Move to Trash |
+| `Backspace` (nothing selected) | Go back / up one folder |
 | `⇧Delete` | Delete permanently (with confirmation) |
 | `⌘I` | Properties |
 | `⌘R` | Refresh |
