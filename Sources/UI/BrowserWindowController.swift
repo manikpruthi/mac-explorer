@@ -1776,7 +1776,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
         if command {
             if event.keyCode == 51 {
-                trashSelection()
+                if tab.selected.isEmpty {
+                    if tab.historyIndex > 0 { goHistory(-1) } else { goUp() }
+                } else {
+                    trashSelection()
+                }
                 return true
             }
             if event.keyCode == 126 {
@@ -1845,7 +1849,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return true
         }
         if event.keyCode == 51 || event.keyCode == 117 {
-            if shift {
+            if tab.selected.isEmpty {
+                if tab.historyIndex > 0 { goHistory(-1) } else { goUp() }
+            } else if shift {
                 confirmPermanentDelete()
             } else {
                 trashSelection()
@@ -2328,14 +2334,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if isTrashLocation() {
             menu.addItem(.separator())
             menu.addItem(makeMenuItem("Restore", icon: "arrow.uturn.backward") { [weak self] in
-                self?.activeTab.selected = Set(paths)
-                self?.restoreSelectedItems()
-            })
-            menu.addItem(makeMenuItem("Restore item", icon: "arrow.uturn.backward") { [weak self] in
-                self?.activeTab.selected = Set(paths)
-                self?.restoreSelectedItems()
-            })
-            menu.addItem(makeMenuItem("Restore selected items", icon: "arrow.uturn.backward") { [weak self] in
                 self?.activeTab.selected = Set(paths)
                 self?.restoreSelectedItems()
             })
