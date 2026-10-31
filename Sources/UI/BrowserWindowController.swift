@@ -2303,6 +2303,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if isFolder && !archive {
             menu.addItem(makeMenuItem("Open in Terminal", icon: "terminal") { _ = FileService.openTerminal(entry.path) })
         }
+        if !archive, let shareItem = makeShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }) {
+            menu.addItem(shareItem)
+        }
         menu.addItem(.separator())
         if writable {
             menu.addItem(makeMenuItem("Cut", icon: "scissors", key: "x") { [weak self] in
@@ -2387,6 +2390,31 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         submenu.addItem(makeMenuItem("Other…", icon: "app.badge") { [weak self] in
             self?.chooseApplication(for: entry)
         })
+        item.submenu = submenu
+        return item
+    }
+
+    private func makeShareMenuItem(for urls: [URL]) -> NSMenuItem? {
+        let selector = NSSelectorFromString("sharingServicesForItems:")
+        guard NSSharingService.responds(to: selector) else { return nil }
+        guard let unmanaged = NSSharingService.perform(selector, with: urls),
+              let services = unmanaged.takeUnretainedValue() as? [NSSharingService],
+              !services.isEmpty else { return nil }
+        let item = NSMenuItem(title: "Share", action: nil, keyEquivalent: "")
+        item.image = Icons.symbol("square.and.arrow.up", size: 13)
+        let submenu = NSMenu(title: "Share")
+        for service in services {
+            let capturedURLs = urls
+            let capturedService = service
+            let target = ClosureTarget {
+                capturedService.perform(withItems: capturedURLs)
+            }
+            let serviceItem = NSMenuItem(title: service.menuItemTitle, action: #selector(ClosureTarget.fire(_:)), keyEquivalent: "")
+            serviceItem.target = target
+            serviceItem.representedObject = target
+            serviceItem.image = service.image
+            submenu.addItem(serviceItem)
+        }
         item.submenu = submenu
         return item
     }
@@ -2581,6 +2609,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let menu = NSMenu()
         menu.addItem(makeMenuItem("Open", icon: "arrow.up.forward.app") { [weak self] in self?.open(entry) })
         menu.addItem(makeMenuItem("Show in Finder", icon: "folder") { _ = FileService.reveal(entry.path) })
+        if let shareItem = makeShareMenuItem(for: [URL(fileURLWithPath: entry.path)]) {
+            menu.addItem(shareItem)
+        }
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Properties", icon: "info.circle") { [weak self] in
             self?.showProperties(paths: [entry.path], kind: entry.kind)
