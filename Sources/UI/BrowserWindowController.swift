@@ -1363,7 +1363,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func beginRename() {
         guard activeTab.location.writePath != nil, activeTab.selected.count == 1 else { return }
         renamingPath = activeTab.selected.first
-        if let fileListView, contentHost === fileListView { updateFileList(fileListView) }
+        if let fileListView, contentHost === fileListView {
+            fileListView.prepareForRename(renamingPath)
+            updateFileList(fileListView)
+        }
     }
 
     private func commitRename(_ entry: FileEntry, to name: String) {

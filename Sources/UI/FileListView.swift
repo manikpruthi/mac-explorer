@@ -50,6 +50,20 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private var syncingSelection = false
     private var hoveredRow = -1
     private var renameEditor: RenameTextField?
+    private var renameFrameRetries = 0
+    func prepareForRename(_ path: String?) {
+        guard let path else { return }
+        layoutSubtreeIfNeeded()
+        if mode.isGrid || mode == .tiles {
+            collectionView.layoutSubtreeIfNeeded()
+            if let index = entries.firstIndex(where: { $0.path == path }) {
+                collectionView.scrollToItems(at: [IndexPath(item: index, section: 0)], scrollPosition: .centeredVertically)
+            }
+        } else if let index = entries.firstIndex(where: { $0.path == path }) {
+            tableView.scrollRowToVisible(index)
+        }
+        layoutSubtreeIfNeeded()
+    }
     private var lastFocused: String?
     private var gridIconSize: CGFloat = 80
     private var marqueeStart: NSPoint?
@@ -995,7 +1009,19 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         renameEditor?.removeFromSuperview()
         renameEditor = nil
         guard let path, let entry = entries.first(where: { $0.path == path }) else { return }
-        guard let frame = renameFrame(for: entry) else { return }
+        layoutSubtreeIfNeeded()
+        if mode.isGrid || mode == .tiles {
+            collectionView.layoutSubtreeIfNeeded()
+        }
+        guard let frame = renameFrame(for: entry) else {
+            guard renameFrameRetries < 3 else { return }
+            renameFrameRetries += 1
+            DispatchQueue.main.async { [weak self] in
+                self?.syncRenameEditor(path)
+            }
+            return
+        }
+        renameFrameRetries = 0
         let editor = RenameTextField()
         editor.stringValue = entry.name
         editor.font = NSFont.systemFont(ofSize: 13)
@@ -1027,6 +1053,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     private func renameFrame(for entry: FileEntry) -> NSRect? {
         if mode.isGrid || mode == .tiles {
+            layoutSubtreeIfNeeded()
+            collectionView.layoutSubtreeIfNeeded()
             guard let index = entries.firstIndex(where: { $0.path == entry.path }) else { return nil }
             let indexPath = IndexPath(item: index, section: 0)
             guard let item = collectionView.item(at: indexPath) else { return nil }
