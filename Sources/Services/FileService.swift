@@ -135,7 +135,7 @@ enum FileService {
     }
 
     /// Builds an entry from an lstat result; only symlinks pay for a second (following) stat.
-    private static func makeEntry(name: String, path: String, link: StatInfo) -> FileEntry {
+    static func makeEntry(name: String, path: String, link: StatInfo) -> FileEntry {
         let info = link.isSymlink ? (statInfo(path) ?? link) : link
         return FileEntry(
             name: name,
@@ -169,62 +169,14 @@ enum FileService {
 
     // MARK: - Search
 
+    /// Filesystem-only search (no Spotlight); see `SearchService` for the indexed search.
     static func search(
         root: String,
         query: String,
         showHidden: Bool,
         limit: Int = 250
     ) -> SearchResponse {
-        let start = URL(fileURLWithPath: root).standardizedFileURL.path
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let deadline = Date().addingTimeInterval(6)
-        // Breadth-first so shallow matches are found before the result limit is hit.
-        var queue: [(path: String, depth: Int)] = [(start, 0)]
-        var head = 0
-        var results: [FileEntry] = []
-        var truncated = false
-
-        scan: while head < queue.count, results.count < limit {
-            if Task.isCancelled || Date() > deadline {
-                truncated = true
-                break
-            }
-            let current = queue[head]
-            head += 1
-            guard let names = try? FileManager.default.contentsOfDirectory(atPath: current.path) else { continue }
-            for (offset, name) in names.enumerated() {
-                if offset & 63 == 63, Task.isCancelled || Date() > deadline {
-                    truncated = true
-                    break scan
-                }
-                if !showHidden && name.hasPrefix(".") { continue }
-                let fullPath = (current.path as NSString).appendingPathComponent(name)
-                guard let link = statInfo(fullPath, followSymlinks: false) else { continue }
-                if needle.isEmpty || name.lowercased().contains(needle) {
-                    results.append(makeEntry(name: name, path: fullPath, link: link))
-                    if results.count >= limit {
-                        truncated = true
-                        break scan
-                    }
-                }
-                // lstat: symlinked directories report isDirectory == false and are not followed.
-                if link.isDirectory,
-                   current.depth < 10,
-                   !shouldSkipDirectory(name, path: fullPath, showHidden: showHidden, isRoot: current.depth == 0) {
-                    queue.append((fullPath, current.depth + 1))
-                }
-            }
-        }
-        if head < queue.count { truncated = true }
-        return SearchResponse(root: start, entries: results, truncated: truncated)
-    }
-
-    private static func shouldSkipDirectory(_ name: String, path: String, showHidden: Bool, isRoot: Bool) -> Bool {
-        if FileKinds.isPackageDirectory(name) { return true }
-        if FileKinds.isSkippedSystemPath(path) { return true }
-        if isRoot { return false }
-        if !showHidden && name.hasPrefix(".") { return true }
-        return FileKinds.searchSkip.contains(name)
+        SearchService.search(root: root, query: query, showHidden: showHidden, limit: limit, useIndex: false)
     }
 
     static func gallery(root: String, limit: Int = 160) -> GalleryResponse {

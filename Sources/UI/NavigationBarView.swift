@@ -115,6 +115,12 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
         searchField.font = NSFont.systemFont(ofSize: 12.5)
         searchField.textColor = Theme.textPrimary
         searchField.placeholderString = "Search"
+        searchField.toolTip = """
+            Search names in this folder and its subfolders (uses the Spotlight index when available).
+            Wildcards: *.pdf   Exact: "annual report"
+            Filters: kind:image  ext:swift  size:>10MB  size:large
+                     modified:today  modified:>2025-01-01  content:invoice
+            """
         searchField.focusRingType = .none
         searchField.cell?.isScrollable = true
         searchField.cell?.wraps = false

@@ -66,6 +66,8 @@ struct SearchResponse: Sendable {
     let root: String
     let entries: [FileEntry]
     let truncated: Bool
+    /// True when the Spotlight index was consulted (results merged with a folder walk).
+    var usedIndex = false
 }
 
 struct GalleryResponse: Sendable {
@@ -310,6 +312,7 @@ struct Preferences: Codable, Sendable {
     var showExtensions = false
     var view: ViewMode = .details
     var detailsOpen = false
+    var previewOpen = false
     var sidebarVisible = true
     var quickAccessOpen = true
     var thisPcOpen = true
@@ -323,6 +326,7 @@ struct Preferences: Codable, Sendable {
         showExtensions = (try? container.decode(Bool.self, forKey: .showExtensions)) ?? false
         view = (try? container.decode(ViewMode.self, forKey: .view)) ?? .details
         detailsOpen = (try? container.decode(Bool.self, forKey: .detailsOpen)) ?? false
+        previewOpen = (try? container.decode(Bool.self, forKey: .previewOpen)) ?? false
         sidebarVisible = (try? container.decode(Bool.self, forKey: .sidebarVisible)) ?? true
         quickAccessOpen = (try? container.decode(Bool.self, forKey: .quickAccessOpen)) ?? true
         thisPcOpen = (try? container.decode(Bool.self, forKey: .thisPcOpen)) ?? true

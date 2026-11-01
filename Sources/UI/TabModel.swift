@@ -19,6 +19,7 @@ final class TabModel {
     var searchEntries: [FileEntry] = [] { didSet { contentVersion &+= 1 } }
     var searchLoading = false
     var searchTruncated = false
+    var searchUsedIndex = false
     var searchRoot = ""
 
     private struct VisibleKey: Equatable {

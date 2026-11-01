@@ -56,7 +56,7 @@ Evidence is behavioral, not binary-level. No proprietary assets (Segoe UI Variab
 - Window chrome is custom: macOS traffic lights are hidden and replaced by Windows-style minimize/maximize/close glyphs; the title strip drags the window and double-click maximizes.
 
 ## Non-goals
-Cloud/OneDrive/Microsoft 365, drag-out to Finder, shell extensions, indexed search, preview pane, bulk rename, permissions elevation. macOS security prompts and platform semantics win over Windows quirks.
+Cloud/OneDrive/Microsoft 365, drag-out to Finder, shell extensions, a private search index (search uses the system Spotlight index instead), bulk rename, permissions elevation (the permissions editor only changes what the user already owns). macOS security prompts and platform semantics win over Windows quirks.
 
 ## Verification
 1. `./build.sh` and the app's `--self-test` / `--ui-test` suites.

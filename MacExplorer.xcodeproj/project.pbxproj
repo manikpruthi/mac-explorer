@@ -157,6 +157,9 @@
 			children = (
 				C91600F573FF38843064995D /* FileService.swift */,
 				A1B2C3D4E5F60718293A4B5C /* DirectoryWatcher.swift */,
+				240CBBF630D842A18B4CF86A /* PermissionsService.swift */,
+				0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */,
+				0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */,
 				7AA46B59E5D17BB7ADD8687B /* ArchiveService.swift */,
 				2005D0896D1D934724E926BB /* NetworkService.swift */,
 				69DABC407D1DEA3C0B539631 /* PasteboardService.swift */,
@@ -227,6 +230,18 @@
 		2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLookPreview.swift; sourceTree = "<group>"; };
 
 		3B8E6D4FA2E95C17B4F9A326 /* QuickLookPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */; };
+		240CBBF630D842A18B4CF86A /* PermissionsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsService.swift; sourceTree = "<group>"; };
+		296158BD57374DE8BABB5DD0 /* PermissionsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 240CBBF630D842A18B4CF86A /* PermissionsService.swift */; };
+		0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateFinder.swift; sourceTree = "<group>"; };
+		6792DC14776A45B5ABF5F155 /* DuplicateFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */; };
+		0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchService.swift; sourceTree = "<group>"; };
+		989FC9C1492D4EC693F9F0C6 /* SearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */; };
+		51131F62D55C40F09577AD68 /* PermissionsOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsOverlay.swift; sourceTree = "<group>"; };
+		764552E08E184AE991F72E52 /* PermissionsOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51131F62D55C40F09577AD68 /* PermissionsOverlay.swift */; };
+		22DEA33D13C14A1CADD18779 /* DuplicatesOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicatesOverlay.swift; sourceTree = "<group>"; };
+		328DBCD0C7CB400AA04A0F6F /* DuplicatesOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22DEA33D13C14A1CADD18779 /* DuplicatesOverlay.swift */; };
+		DCB6B2B1F07943A78D23BC69 /* PreviewPaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewPaneView.swift; sourceTree = "<group>"; };
+		CD1E9EA2EFE04E58877B807D /* PreviewPaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCB6B2B1F07943A78D23BC69 /* PreviewPaneView.swift */; };
 
 		CA79377A86F72695210905D1 /* UI */ = {
 			isa = PBXGroup;
@@ -245,6 +260,9 @@
 				82B3A3CAB1D4E28A076B5DCC /* NetworkView.swift */,
 				1BF5ED78F13DE0DED9E97DD7 /* DetailsPaneView.swift */,
 				2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */,
+				51131F62D55C40F09577AD68 /* PermissionsOverlay.swift */,
+				22DEA33D13C14A1CADD18779 /* DuplicatesOverlay.swift */,
+				DCB6B2B1F07943A78D23BC69 /* PreviewPaneView.swift */,
 				321B64A4D28CB40AF35F2247 /* Dialogs.swift */,
 			);
 			name = UI;
@@ -298,6 +316,12 @@
 				3794E45957B34DF91E130585 /* in Sources */,
 				4F1295F698D92B5FCF14C00A /* in Sources */,
 				3B8E6D4FA2E95C17B4F9A326 /* in Sources */,
+				296158BD57374DE8BABB5DD0 /* in Sources */,
+				6792DC14776A45B5ABF5F155 /* in Sources */,
+				989FC9C1492D4EC693F9F0C6 /* in Sources */,
+				764552E08E184AE991F72E52 /* in Sources */,
+				328DBCD0C7CB400AA04A0F6F /* in Sources */,
+				CD1E9EA2EFE04E58877B807D /* in Sources */,
 				14FBB86D8B254D7943B05685 /* in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -404,7 +428,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = tools.macexplorer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;
@@ -428,7 +452,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.0;
+				MARKETING_VERSION = 1.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = tools.macexplorer;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = NO;

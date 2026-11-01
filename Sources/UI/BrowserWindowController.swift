@@ -62,6 +62,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private let mainPane = FlippedView()
     private let detailsContainer = NSView()
     private var detailsPane: DetailsPaneView?
+    private var previewPane: PreviewPaneView?
     private let statusBar = StatusBarView()
     private var fileListView: FileListView?
     private let homeView = HomeView()
@@ -311,6 +312,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         commandBar.onToggleHidden = { [weak self] in self?.toggleHidden() }
         commandBar.onToggleExtensions = { [weak self] in self?.toggleExtensions() }
         commandBar.onToggleDetails = { [weak self] in self?.toggleDetails() }
+        commandBar.onTogglePreview = { [weak self] in self?.togglePreview() }
+        commandBar.onFindDuplicates = { [weak self] in
+            guard let self, let path = self.activeTab.location.writePath else { return }
+            self.showDuplicates(root: path)
+        }
         commandBar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
         commandBar.onTogglePin = { [weak self] in self?.togglePinForSelection() }
         commandBar.onSetTheme = { [weak self] theme in self?.setTheme(theme) }
@@ -343,9 +349,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func applyPaneVisibility() {
         let prefs = preferences
         sidebar.isHidden = !prefs.sidebarVisible
-        detailsContainer.isHidden = !prefs.detailsOpen
-        mainTrailingToDetails.isActive = prefs.detailsOpen
-        mainTrailingToRow.isActive = !prefs.detailsOpen
+        let sidePaneOpen = prefs.detailsOpen || prefs.previewOpen
+        detailsContainer.isHidden = !sidePaneOpen
+        mainTrailingToDetails.isActive = sidePaneOpen
+        mainTrailingToRow.isActive = !sidePaneOpen
         workspaceWithSidebar.isActive = prefs.sidebarVisible
         workspaceWithoutSidebar.isActive = !prefs.sidebarVisible
         updateProgress()
@@ -443,6 +450,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             showHidden: preferences.showHidden,
             showExtensions: preferences.showExtensions,
             detailsOpen: preferences.detailsOpen,
+            previewOpen: preferences.previewOpen,
+            canFindDuplicates: tab.location.writePath != nil,
             sidebarVisible: preferences.sidebarVisible,
             theme: preferences.theme
         )
@@ -610,10 +619,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let tab = activeTab
         let text: String
         if tab.searchLoading {
-            text = "Searching for \(tab.searchQuery) in \(tab.searchRoot)"
+            let soFar = tab.searchEntries.isEmpty ? "" : " · \(FormatTools.plural(tab.searchEntries.count, "result")) so far"
+            text = "Searching for \(tab.searchQuery) in \(tab.searchRoot)\(soFar)"
         } else {
-            let truncated = tab.searchTruncated ? " · showing the first 250 matches" : ""
-            text = "\(FormatTools.plural(tab.searchEntries.count, "result")) for \(tab.searchQuery) in \(tab.searchRoot)\(truncated)"
+            let truncated = tab.searchTruncated ? " · showing the 250 best matches" : ""
+            let source = tab.searchUsedIndex ? " · Spotlight index + folder scan" : ""
+            text = "\(FormatTools.plural(tab.searchEntries.count, "result")) for \(tab.searchQuery) in \(tab.searchRoot)\(truncated)\(source)"
         }
         let label = makeLabel(text, size: 12.5, color: Theme.textSecondary)
         let clear = HoverButton(title: "Clear", image: "xmark")
@@ -734,14 +745,38 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         return pane
     }
 
+    @discardableResult
+    private func ensurePreviewPane() -> PreviewPaneView {
+        if let previewPane { return previewPane }
+        let pane = PreviewPaneView()
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        detailsContainer.addSubview(pane)
+        NSLayoutConstraint.activate([
+            pane.leadingAnchor.constraint(equalTo: detailsContainer.leadingAnchor),
+            pane.trailingAnchor.constraint(equalTo: detailsContainer.trailingAnchor),
+            pane.topAnchor.constraint(equalTo: detailsContainer.topAnchor),
+            pane.bottomAnchor.constraint(equalTo: detailsContainer.bottomAnchor),
+        ])
+        pane.onClose = { [weak self] in self?.togglePreview() }
+        previewPane = pane
+        return pane
+    }
+
+    /// The details and preview panes share one slot; whichever is closed is released entirely.
     private func updateDetailsPane() {
-        guard preferences.detailsOpen else {
-            detailsPane?.removeFromSuperview()
-            detailsPane = nil
-            return
+        if preferences.detailsOpen {
+            ensureDetailsPane().update(entries: selectedEntries(), isArchive: activeTab.location.isArchive)
+        } else if let detailsPane {
+            detailsPane.removeFromSuperview()
+            self.detailsPane = nil
         }
-        let pane = ensureDetailsPane()
-        pane.update(entries: selectedEntries(), isArchive: activeTab.location.isArchive)
+        if preferences.previewOpen && !preferences.detailsOpen {
+            ensurePreviewPane().update(entries: selectedEntries())
+        } else if let previewPane {
+            previewPane.tearDown()
+            previewPane.removeFromSuperview()
+            self.previewPane = nil
+        }
     }
 
     private func updateSelectionDependentUI() {
@@ -861,6 +896,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 self.showProperties(paths: [path], kind: kind)
             }
+        }
+        if arguments.contains("--permissions"), let path = activeTab.focusedPath ?? visibleEntries().first?.path {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.showPermissions(paths: [path])
+            }
+        }
+        if arguments.contains("--duplicates"), let path = activeTab.location.writePath {
+            showDuplicates(root: path)
         }
     }
 
@@ -1086,10 +1130,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             let query = value
             let hidden = self.preferences.showHidden
             let currentRoot = root
+            let partial: @Sendable (SearchResponse) -> Void = { [weak self] response in
+                Task { @MainActor in self?.applySearch(response, token: token, query: query, final: false) }
+            }
             self.searchTask = Task.detached(priority: .userInitiated) { [weak self] in
-                let response = FileService.search(root: currentRoot, query: query, showHidden: hidden)
+                let response = SearchService.search(root: currentRoot, query: query, showHidden: hidden, partial: partial)
                 guard !Task.isCancelled else { return }
-                await self?.applySearch(response, token: token, query: query)
+                await self?.applySearch(response, token: token, query: query, final: true)
             }
         }
         searchWork = work
@@ -1114,12 +1161,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
     }
 
-    private func applySearch(_ response: SearchResponse, token: UUID, query: String) {
+    /// Indexed (Spotlight) hits arrive first as a partial result; the final result adds what the
+    /// folder walk found (hidden and unindexed items).
+    private func applySearch(_ response: SearchResponse, token: UUID, query: String, final: Bool) {
         guard token == searchToken, activeTab.searchQuery == query else { return }
         let tab = activeTab
+        if !final && !tab.searchLoading { return }
         tab.searchEntries = response.entries
-        tab.searchLoading = false
-        tab.searchTruncated = response.truncated
+        tab.searchLoading = !final
+        tab.searchTruncated = final && response.truncated
+        tab.searchUsedIndex = response.usedIndex
         tab.searchRoot = response.root
         render()
     }
@@ -1248,6 +1299,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     private func toggleDetails() {
         preferences.detailsOpen.toggle()
+        if preferences.detailsOpen { preferences.previewOpen = false }
+        store.save()
+        render()
+    }
+
+    private func togglePreview() {
+        preferences.previewOpen.toggle()
+        if preferences.previewOpen { preferences.detailsOpen = false }
         store.save()
         render()
     }
@@ -1720,7 +1779,38 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func showProperties(paths: [String], kind: FileKind?) {
         guard !paths.isEmpty else { return }
         let properties = PropertiesOverlay(paths: paths, kind: kind)
+        properties.onEditPermissions = { [weak self] in self?.showPermissions(paths: paths) }
         presentOverlay(properties)
+    }
+
+    private func showPermissions(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        let permissions = PermissionsOverlay(paths: paths)
+        permissions.onDismiss = { [weak self] in self?.dismissOverlay() }
+        permissions.onApplied = { [weak self] count in
+            self?.showToast(count == 0 ? "Permissions unchanged" : "Updated permissions for \(FormatTools.plural(count, "item"))")
+        }
+        presentOverlay(permissions)
+    }
+
+    private func showDuplicates(root: String) {
+        let duplicates = DuplicatesOverlay(root: root, showHidden: preferences.showHidden)
+        duplicates.onDismiss = { [weak self] in self?.dismissOverlay() }
+        duplicates.onOpen = { path in _ = FileService.openPath(path) }
+        duplicates.onReveal = { [weak self] path in
+            guard let self else { return }
+            self.dismissOverlay()
+            self.navigate(to: .fs(path: PathTools.dirname(path)))
+            self.activeTab.selected = [path]
+            self.activeTab.focusedPath = path
+        }
+        duplicates.onTrash = { [weak self] paths in
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let receipt = FileService.trashWithReceipt(paths)
+                await self?.finishTrash(receipt)
+            }
+        }
+        presentOverlay(duplicates)
     }
 
     private func showConfirm(
@@ -1810,6 +1900,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             if event.keyCode == 36 || event.keyCode == 76 {
                 if let confirm = overlay as? ConfirmOverlay {
                     confirm.triggerConfirm()
+                    return true
+                }
+                if let actionable = overlay as? DefaultActionOverlay {
+                    actionable.triggerDefault()
                     return true
                 }
                 if overlay is AboutOverlay || overlay is PropertiesOverlay {
@@ -2097,6 +2191,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     func windowWillClose(_ notification: Notification) {
         cancelSearchWork()
+        previewPane?.tearDown()
         directoryWatcher.stop()
         for token in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
@@ -2428,8 +2523,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 self?.compressSelection()
             })
         }
+        if writable && isFolder && paths.count == 1 {
+            menu.addItem(makeMenuItem("Find duplicates in folder", icon: "doc.on.doc") { [weak self] in
+                self?.showDuplicates(root: entry.path)
+            })
+        }
         if !archive {
             menu.addItem(.separator())
+            if writable {
+                menu.addItem(makeMenuItem("Permissions…", icon: "lock.shield") { [weak self] in
+                    self?.activeTab.selected = Set(paths)
+                    self?.showPermissions(paths: paths)
+                })
+            }
             menu.addItem(makeMenuItem("Properties", icon: "info.circle", key: "i") { [weak self] in
                 self?.activeTab.selected = Set(paths)
                 self?.showProperties(paths: paths, kind: entry.kind)
@@ -2600,6 +2706,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         items.append(makeMenuItem("Show file extensions", checked: preferences.showExtensions) { [weak self] in
             self?.toggleExtensions()
         })
+        items.append(.separator())
+        items.append(makeMenuItem("Details pane", checked: preferences.detailsOpen) { [weak self] in
+            self?.toggleDetails()
+        })
+        items.append(makeMenuItem("Preview pane", checked: preferences.previewOpen) { [weak self] in
+            self?.togglePreview()
+        })
         return items
     }
 
@@ -2637,6 +2750,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         menu.addItem(makeMenuItem("Open in Terminal", icon: "terminal", enabled: tab.location.writePath != nil) { [weak self] in
             guard let self, let path = self.activeTab.location.writePath else { return }
             _ = FileService.openTerminal(path)
+        })
+        menu.addItem(makeMenuItem("Find duplicates here", icon: "doc.on.doc", enabled: tab.location.writePath != nil) { [weak self] in
+            guard let self, let path = self.activeTab.location.writePath else { return }
+            self.showDuplicates(root: path)
         })
         if isTrashLocation() {
             menu.addItem(makeMenuItem("Empty Trash", icon: "trash.slash") { [weak self] in
@@ -3053,6 +3170,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     @objc func toggleExtensionsAction(_ sender: Any?) { toggleExtensions() }
     @objc func toggleSidebarAction(_ sender: Any?) { toggleSidebar() }
     @objc func toggleDetailsAction(_ sender: Any?) { toggleDetails() }
+    @objc func togglePreviewAction(_ sender: Any?) { togglePreview() }
+    @objc func findDuplicatesAction(_ sender: Any?) {
+        guard let path = activeTab.location.writePath else { return }
+        showDuplicates(root: path)
+    }
+    @objc func permissionsAction(_ sender: Any?) {
+        guard !activeTab.selected.isEmpty else { return }
+        showPermissions(paths: Array(activeTab.selected))
+    }
     @objc func goBackAction(_ sender: Any?) { goHistory(-1) }
     @objc func goForwardAction(_ sender: Any?) { goHistory(1) }
     @objc func goUpAction(_ sender: Any?) { goUp() }
@@ -3119,6 +3245,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         case #selector(toggleDetailsAction(_:)):
             menuItem.state = preferences.detailsOpen ? .on : .off
             return true
+        case #selector(togglePreviewAction(_:)):
+            menuItem.state = preferences.previewOpen ? .on : .off
+            return true
+        case #selector(findDuplicatesAction(_:)):
+            return activeTab.location.writePath != nil
+        case #selector(permissionsAction(_:)):
+            return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
         case #selector(newTabAction(_:)):
             return true
         default:

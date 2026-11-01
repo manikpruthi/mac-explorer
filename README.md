@@ -12,6 +12,10 @@ views, Electron/Chromium components, or third-party dependencies.
 ![Network](docs/screenshots/network.png)
 ![Archive browsing](docs/screenshots/archive.png)
 ![Search](docs/screenshots/search.png)
+![Search filters with the Spotlight index](docs/screenshots/search-filters.png)
+![Preview pane](docs/screenshots/preview-pane.png)
+![Permissions editor](docs/screenshots/permissions.png)
+![Find duplicates](docs/screenshots/duplicates.png)
 
 ## Features
 
@@ -48,6 +52,21 @@ views, Electron/Chromium components, or third-party dependencies.
 - **Volume ejection** — eject mounted disk images, removable media, and network volumes from the
   navigation pane or the Home volume cards.
 - **Details pane** with previews, metadata, quick actions, and a multi-selection summary.
+- **Preview pane** (`⌥⌘P`, View menu, or the command bar’s View ▾ / ⋯ menus) — a Windows-style
+  live preview of the selected file (documents, PDFs, images, video, source code, and anything else
+  Quick Look renders). It shares the right-hand slot with the Details pane (opening one closes the
+  other), waits ~120 ms while you arrow through files, and releases its renderer when closed.
+- **Permissions editor** — **Permissions…** from the file context menu, the File menu, or the
+  Properties dialog. Owner/Group/Everyone read-write-execute checkboxes kept in sync with a numeric
+  (octal) field and `rwxr-xr-x` display, plus the Finder **Locked** flag. For folders, **Apply to
+  enclosed items** walks the tree without following symlinks; enclosed files only keep execute bits
+  if they were already executable. Properties shows the current permissions, owner, and group.
+- **Find duplicates** — from the ⋯ menu, File menu, folder background menu, or a folder’s context
+  menu. Files are grouped by size, then by a 16 KB head hash, then confirmed with a full SHA-256, so
+  only same-size candidates are ever read. Hard links and empty files are not reported. Results show
+  each set with reclaimable space; **Select extra copies** marks all but the shortest-path copy, and
+  **Move to Trash** refuses to remove every copy of a set (Undo Delete restores them). Double-click
+  opens a file; **Show in folder** jumps to it.
 - **Quick Look** — press `Space` on a selected file to preview it in the system Quick Look panel,
   like Finder. `Space` or `Esc` closes it, arrow keys browse the folder, and `Enter` opens the
   previewed file. The context menu also offers Quick Look, though the `Space` shortcut is faster.
@@ -67,10 +86,14 @@ views, Electron/Chromium components, or third-party dependencies.
   using a `quickshare://send` handoff (no document-open handoff; HTML and every other file type work).
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
   cut intent never leaves the app.
-- **Scoped, debounced search** with hidden-item support and a 250-result cap. Results are found
-  breadth-first (shallow matches first), and a new keystroke cancels the previous scan. App/package
-  bundles are treated as opaque; `~/Library`, `/Library`, `/System`, and `/private` are skipped by
-  path, so project folders that happen to be named `Library` are still searched.
+- **Indexed, scoped search** — queries the macOS **Spotlight index** for the current folder first
+  (deep results in milliseconds, shown immediately), then merges in a bounded breadth-first folder
+  walk that finds hidden and unindexed items. Results are ranked (exact name, prefix, word start,
+  then anywhere; shallower first) before the 250-result cap is applied, and a new keystroke cancels
+  the previous search. Matching is case- and accent-insensitive (`resume` finds `Résumé.pdf`).
+  App/package bundles are treated as opaque; `~/Library`, `/Library`, `/System`, and `/private` are
+  skipped by path, so project folders that happen to be named `Library` are still searched. See
+  [Search syntax](#search-syntax).
 - **Safe extension hiding** — with extensions hidden, executables (`.app`, `.exe`, `.pkg`, `.sh`, …)
   and double extensions (`invoice.pdf.exe`) always show their real extension.
 - **Light, dark, and system themes**, accent `#0067C0` selection, Windows-style window buttons with
@@ -90,7 +113,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.3.0.dmg`](release/Mac-Explorer-1.3.0.dmg)**
+1. Download **[`release/Mac-Explorer-1.4.0.dmg`](release/Mac-Explorer-1.4.0.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -114,7 +137,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.3.0.dmg` and `release/Mac-Explorer-1.3.0.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.4.0.dmg` and `release/Mac-Explorer-1.4.0.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.
@@ -151,6 +174,7 @@ declared in `Resources/Info.plist`.
 | `Backspace` (nothing selected) | Go back / up one folder |
 | `⇧Delete` | Delete permanently (with confirmation) |
 | `⌘I` | Properties |
+| `⌥⌘P` | Preview pane |
 | `⌘R` | Refresh |
 | `Enter` | Open focused item |
 | `Space` | Quick Look selected file (Space/Esc closes) |
@@ -159,6 +183,26 @@ declared in `Resources/Info.plist`.
 
 Drag a tab outside the window (or right-click it) to move it into a new window. Drag files onto
 folders to move them; hold Option to copy. Dropping files from Finder copies them into the target.
+
+## Search syntax
+
+Type in the search box (`⌘F`) to search the current folder and its subfolders. Plain words must all
+appear in the name; everything is case- and accent-insensitive. Hover the box for a reminder.
+
+| Query | Finds |
+| --- | --- |
+| `invoice 2025` | Names containing both words |
+| `*.pdf`, `IMG_????.jpg` | Wildcards (`*` any run, `?` one character) matched against the whole name |
+| `"annual report"` | The exact text, including spaces or `*` |
+| `kind:image` | `folder`, `image`, `video`, `audio`, `pdf`, `document`, `word`, `spreadsheet`, `presentation`, `archive`, `code`, `text`, `app`, `font`, `disk` |
+| `ext:swift`, `ext:jpg,png`, `type:heic` | File extensions |
+| `size:>10MB`, `size:<=500kb`, `size:large` | Sizes (`>`, `>=`, `<`, `<=`, `=`; B/KB/MB/GB) or Windows buckets `empty`, `tiny`, `small`, `medium`, `large`, `huge`, `gigantic` |
+| `modified:today`, `modified:week`, `modified:>2025-01-01` | `today`, `yesterday`, `week`, `month`, `year`, or a `yyyy-MM-dd` date with an optional comparison (`datemodified:` also works) |
+| `content:quarterly` | Files whose text contains the word (Spotlight; text/code files in unindexed folders) |
+
+Filters combine, e.g. `kind:pdf size:>1MB modified:month tax`. Unknown `key:value` words are
+searched as plain text. The results header shows “Spotlight index + folder scan” when the index was
+used.
 
 ## Architecture
 
@@ -176,6 +220,13 @@ folders to move them; hold Option to copy. Dropping files from Finder copies the
   cleanup of archives not opened recently. Extract All writes straight to the destination.
 - `Sources/Services/NetworkService.swift` — `NetServiceBrowser` SMB discovery plus `/sbin/mount`
   parsing; Finder owns SMB auth and mounting.
+- `Sources/Services/SearchService.swift` — search query parser (wildcards, quoted phrases, filters),
+  Spotlight `MDQuery` lookup scoped to the current folder, the bounded folder walk, merging, and
+  relevance ranking.
+- `Sources/Services/PermissionsService.swift` — `lstat`/`chmod`/`chflags` permission reads and
+  writes, owner/group names, Locked flag handling, and recursive apply.
+- `Sources/Services/DuplicateFinder.swift` — size bucketing, head hashing, and streamed SHA-256
+  comparison for Find duplicates.
 - `Sources/Services/PasteboardService.swift` — `NSPasteboard` file-URL publishing and change-count
   ownership tracking for internal cut intent.
 - `Sources/Services/IconService.swift` — per-type `NSWorkspace` icons for documents (per-path for
@@ -186,7 +237,8 @@ folders to move them; hold Option to copy. Dropping files from Finder copies the
   `~/Library/Application Support/Mac Explorer`. Writes are debounced and done off the main thread,
   with a synchronous flush on quit.
 - `Sources/UI/` — programmatic AppKit: window chrome, tabs, navigation/command/status bars, sidebar,
-  file views, Home, Gallery, Network, details pane, Quick Look preview, dialogs, menus, and theme.
+  file views, Home, Gallery, Network, details and preview panes, Quick Look preview, dialogs
+  (Properties, Permissions, Find duplicates), menus, and theme.
 
 There are no storyboards or XIBs. The only subprocesses are `/usr/bin/bsdtar`, `/usr/bin/ditto`,
 `/usr/bin/zip`, `/sbin/mount`, and
@@ -199,11 +251,10 @@ memory column; `ps` RSS is higher only because it counts shared framework pages)
 
 ```bash
 footprint "$(pgrep -x MacExplorer | head -1)" | grep phys_footprint
-# 50 MB idle Home · 56 MB details view · 59 MB large-icons view of 200 images
-# For reference, Finder measured 78 MB on the same machine
+# 36 MB idle Home · 41 MB details view · 48 MB with the details pane (1.4.0, release build)
 ```
 
-The real memory cost is below Finder's even with 16 MB of thumbnails cached. (`ps` RSS reports
+The real memory cost stays low even with 16 MB of thumbnails cached. (`ps` RSS reports
 ~113 MB idle — that includes reclaimable shared-cache pages and double-counts framework code
 mapped into every AppKit app.) Techniques used:
 
@@ -220,6 +271,21 @@ mapped into every AppKit app.) Techniques used:
 - Icon grid and tiles are `NSCollectionView`s that create items on demand; details/list use reusable
   `NSTableView` cells.
 - Search and Gallery scans have result caps (`250`/`160`), depth limits, and a 6-second deadline.
+- Search keeps no index of its own: it asks the system Spotlight index (which lives in
+  `mds`, not in this process) and holds nothing between searches.
+- The preview pane and the Permissions/Find duplicates dialogs are created on demand and released
+  when closed. Duplicate scanning keeps only paths and sizes, reads candidates through one reused
+  1 MB buffer, and stops at 200,000 files or 2 minutes.
+
+Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with throwaway state):
+
+| Scenario | 1.3.0 | 1.4.0 |
+| --- | --- | --- |
+| Idle Home | 36 MB | 36 MB |
+| Details view of a folder | 41 MB | 41 MB |
+| Details pane open | 47 MB | 48 MB |
+| Preview pane open (Markdown file) | — | 44 MB |
+| Indexed search showing results | — | 44 MB |
 - There are no web views or Chromium helpers anywhere in the app.
 
 ## Verification
@@ -227,7 +293,7 @@ mapped into every AppKit app.) Techniques used:
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 37 filesystem, archive, sorting, volume, and safety assertions
+# 59 filesystem, archive, sorting, volume, search-query, duplicate, permission, and safety assertions
 "$APP" --self-test
 
 # 50 live-controller assertions: navigation, all five views, sorting, toggles,
@@ -242,8 +308,8 @@ APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacEx
 
 Screenshots in `docs/screenshots/` were generated with the same harness at 2× scale. The capture
 flags used for documentation include `--location`, `--archive`, `--gallery`, `--network`,
-`--gallery-root`, `--view`, `--theme`, `--details`, `--select-first`, `--search`, and
-`--properties`.
+`--gallery-root`, `--view`, `--theme`, `--details`, `--preview`, `--select-first`, `--search`,
+`--properties`, `--permissions`, and `--duplicates`.
 
 Manual end-to-end checks performed: launch to Home, address-bar navigation, breadcrumbs,
 create/rename/copy/cut/paste, Trash and permanent-delete guards, search, tabs and tab close,
@@ -264,7 +330,13 @@ theme switching (light/dark/system), and the full keyboard/menu map.
   a real folder promptly, or use **Extract All** for a permanent copy.
 - Documents show the standard icon for their file type; custom icons assigned to individual
   documents in Finder are not shown (apps and folders are unaffected).
-- No cloud/OneDrive integration, indexed search, preview pane, bulk rename, or permission elevation.
+- Search relies on Spotlight for deep and content results. Folders excluded from Spotlight (or on
+  unindexed volumes and archives) are covered by the folder walk only, whose `content:` matching
+  reads UTF-8/Latin-1 text and source files up to 4 MB.
+- The permissions editor can only change items you own; it never asks for administrator rights and
+  cannot change the owner or group. ACLs are not shown or edited.
+- Find duplicates stops after 200,000 files or 2 minutes and then reports partial results.
+- No cloud/OneDrive integration, bulk rename, or permission elevation.
 - macOS platform semantics (TCC prompts, Finder auth) take precedence over Windows quirks.
 
 Not affiliated with Microsoft. Windows and File Explorer are trademarks of Microsoft Corporation.

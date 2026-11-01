@@ -130,6 +130,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             AppStore.shared.preferences.theme = theme
         }
         if arguments.contains("--details") { AppStore.shared.preferences.detailsOpen = true }
+        if arguments.contains("--preview") {
+            AppStore.shared.preferences.previewOpen = true
+            AppStore.shared.preferences.detailsOpen = false
+        }
         if arguments.contains("--show-hidden") { AppStore.shared.preferences.showHidden = true }
         if arguments.contains("--no-sidebar") { AppStore.shared.preferences.sidebarVisible = false }
     }
@@ -213,6 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(item("New Tab", #selector(BrowserWindowController.newTabAction(_:)), "t"))
         fileMenu.addItem(item("New Folder", #selector(BrowserWindowController.newFolderAction(_:)), "n", [.command, .shift]))
         fileMenu.addItem(.separator())
+        fileMenu.addItem(item("Permissions…", #selector(BrowserWindowController.permissionsAction(_:))))
+        fileMenu.addItem(item("Find Duplicates…", #selector(BrowserWindowController.findDuplicatesAction(_:))))
+        fileMenu.addItem(.separator())
         fileMenu.addItem(item("Close Tab", #selector(BrowserWindowController.closeTabAction(_:)), "w"))
         fileMenu.addItem(item("Close Window", #selector(NSWindow.performClose(_:)), "w", [.command, .shift]))
         fileItem.submenu = fileMenu
@@ -241,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Navigation Pane", #selector(BrowserWindowController.toggleSidebarAction(_:))))
         viewMenu.addItem(item("Details Pane", #selector(BrowserWindowController.toggleDetailsAction(_:))))
+        viewMenu.addItem(item("Preview Pane", #selector(BrowserWindowController.togglePreviewAction(_:)), "p", [.command, .option]))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item("Enter Full Screen", #selector(NSWindow.toggleFullScreen(_:)), "f", [.command, .control]))
         viewItem.submenu = viewMenu

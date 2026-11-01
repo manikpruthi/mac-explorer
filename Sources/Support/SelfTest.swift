@@ -204,8 +204,97 @@ enum SelfTest {
             check("quick share handoff carries paths", false)
         }
 
+        runSearchQueryTests(root: root)
+        runDuplicateTests(root: root)
+        runPermissionTests(root: root)
+
         print("")
         print("\(passes) passed, \(failures) failed")
         return failures == 0 ? 0 : 1
+    }
+
+    private static func runSearchQueryTests(root: URL) {
+        let parsed = SearchQuery.parse("report kind:pdf size:>1MB modified:today")
+        check("query parses filters", parsed.terms == ["report"] && parsed.kinds == [.pdf]
+              && parsed.minSize == 1_000_001 && parsed.modifiedAfter != nil, "\(parsed)")
+        check("query keeps unknown keys as text", SearchQuery.parse("foo:bar").terms == ["foo:bar"])
+        check("query size buckets", SearchQuery.parse("size:small").maxSize == 1_000_000)
+        check("quoted phrase is literal", SearchQuery.parse("\"a*b\"").matchesName("xa*by")
+              && !SearchQuery.parse("\"a*b\"").matchesName("axxb"))
+        let wildcard = SearchQuery.parse("*.TXT")
+        check("wildcard matches whole name", wildcard.matchesName("beta.txt") && !wildcard.matchesName("beta.txt.bak"))
+        check("accent-insensitive names", SearchQuery.parse("resume").matchesName("Résumé.pdf"))
+        check("relevance prefers exact names",
+              SearchQuery.parse("beta").relevance("Beta.txt") < SearchQuery.parse("beta").relevance("alphabeta.txt"))
+        let literal = SearchQuery.parse("\"a*b\"").spotlightQuery() ?? "nil"
+        check("spotlight query escapes literal wildcards", literal == "kMDItemFSName == \"*a\\*b*\"cd", literal)
+
+        let walk = FileService.search(root: root.path, query: "kind:text ext:txt beta", showHidden: false)
+        check("filtered search", walk.entries.map(\.name) == ["Beta.txt"], "\(walk.entries.map(\.name))")
+        try? Data("the quarterly invoice total".utf8).write(to: root.appendingPathComponent("sub/content.txt"))
+        let content = FileService.search(root: root.path, query: "content:invoice", showHidden: false)
+        check("content search reads text files", content.entries.map(\.name) == ["content.txt"],
+              "\(content.entries.map(\.name))")
+    }
+
+    private static func runDuplicateTests(root: URL) {
+        let fm = FileManager.default
+        let dupes = root.appendingPathComponent("dupes")
+        try? fm.createDirectory(at: dupes.appendingPathComponent("nested"), withIntermediateDirectories: true)
+        let big = Data((0..<40_000).map { UInt8($0 % 251) })
+        var different = big
+        different[big.count - 1] ^= 0xFF
+        try? big.write(to: dupes.appendingPathComponent("a.bin"))
+        try? big.write(to: dupes.appendingPathComponent("nested/a copy.bin"))
+        try? different.write(to: dupes.appendingPathComponent("same-size-different-tail.bin"))
+        try? Data("small".utf8).write(to: dupes.appendingPathComponent("s1.txt"))
+        try? Data("small".utf8).write(to: dupes.appendingPathComponent("s2.txt"))
+        try? Data().write(to: dupes.appendingPathComponent("empty1"))
+        try? Data().write(to: dupes.appendingPathComponent("empty2"))
+        try? fm.linkItem(atPath: dupes.appendingPathComponent("s1.txt").path,
+                         toPath: dupes.appendingPathComponent("hardlink.txt").path)
+
+        let result = DuplicateFinder.scan(root: dupes.path, showHidden: false)
+        let sets = result.groups.map { Set($0.paths.map(PathTools.basename)) }
+        check("duplicates found by content", sets.contains(["a.bin", "a copy.bin"]), "\(sets)")
+        check("same size, different tail is not a duplicate",
+              !sets.contains { $0.contains("same-size-different-tail.bin") })
+        check("small duplicates found", sets.contains { $0.isSuperset(of: ["s2.txt"]) && $0.count == 2 }, "\(sets)")
+        check("hard links and empty files are skipped", !sets.contains { $0.contains("empty1") }
+              && !sets.contains { $0.isSuperset(of: ["s1.txt", "hardlink.txt"]) }, "\(sets)")
+        check("duplicate wasted bytes", result.wastedBytes == 40_005, "\(result.wastedBytes)")
+    }
+
+    private static func runPermissionTests(root: URL) {
+        let fm = FileManager.default
+        let file = root.appendingPathComponent("perm.txt")
+        let folder = root.appendingPathComponent("permdir")
+        try? Data("p".utf8).write(to: file)
+        try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Data("child".utf8).write(to: folder.appendingPathComponent("child.txt"))
+        try? Data("#!/bin/sh".utf8).write(to: folder.appendingPathComponent("tool.sh"))
+        chmod(folder.appendingPathComponent("tool.sh").path, 0o755)
+
+        check("symbolic permissions", PermissionsService.symbolic(0o4755, isDirectory: false) == "-rwsr-xr-x"
+              && PermissionsService.symbolic(0o1777, isDirectory: true) == "drwxrwxrwt")
+        check("octal parsing", PermissionsService.parseOctal("644") == 0o644
+              && PermissionsService.parseOctal("0755") == 0o755 && PermissionsService.parseOctal("98") == nil)
+
+        let single = PermissionsService.apply(paths: [file.path], mode: 0o600, locked: false, recursive: false)
+        check("chmod applies", single.ok && PermissionsService.read(file.path)?.mode == 0o600, single.error ?? "")
+
+        let locked = PermissionsService.apply(paths: [file.path], mode: 0o640, locked: true, recursive: false)
+        let lockedInfo = PermissionsService.read(file.path)
+        check("lock applies with mode", locked.ok && lockedInfo?.locked == true && lockedInfo?.mode == 0o640)
+        check("locked file refuses deletion", (try? fm.removeItem(at: file)) == nil)
+        let unlocked = PermissionsService.apply(paths: [file.path], mode: nil, locked: false, recursive: false)
+        check("unlock applies", unlocked.ok && PermissionsService.read(file.path)?.locked == false)
+
+        let recursive = PermissionsService.apply(paths: [folder.path], mode: 0o750, locked: false, recursive: true)
+        let child = PermissionsService.read(folder.appendingPathComponent("child.txt").path)?.mode
+        let tool = PermissionsService.read(folder.appendingPathComponent("tool.sh").path)?.mode
+        check("recursive keeps file execute bits", recursive.ok && PermissionsService.read(folder.path)?.mode == 0o750
+              && child == 0o640 && tool == 0o750,
+              "dir \(String(PermissionsService.read(folder.path)?.mode ?? 0, radix: 8)) child \(String(child ?? 0, radix: 8)) tool \(String(tool ?? 0, radix: 8))")
     }
 }

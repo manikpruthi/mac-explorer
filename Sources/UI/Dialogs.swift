@@ -108,6 +108,11 @@ final class AboutOverlay: OverlayView {
 
 @MainActor
 final class PropertiesOverlay: OverlayView {
+    var onEditPermissions: (() -> Void)? {
+        didSet { permissionsButton.isHidden = onEditPermissions == nil || !loaded || errorMessage != nil }
+    }
+
+    private let permissionsButton = HoverButton(title: "Permissions…", image: "lock.shield")
     private let head = makeLabel("Properties", size: 15, weight: .semibold)
     private let close = HoverButton(title: "", image: "xmark")
     private let spinner = NSProgressIndicator()
@@ -143,11 +148,19 @@ final class PropertiesOverlay: OverlayView {
         ok.target = self
         ok.action = #selector(okPressed)
         card.addSubview(ok)
+        permissionsButton.isBordered = true
+        permissionsButton.bezelStyle = .rounded
+        permissionsButton.font = NSFont.systemFont(ofSize: 12.5)
+        permissionsButton.target = self
+        permissionsButton.action = #selector(permissionsPressed)
+        permissionsButton.isHidden = true
+        card.addSubview(permissionsButton)
 
         head.frame = NSRect(x: 18, y: 16, width: 200, height: 20)
         close.frame = NSRect(x: cardSize.width - 36, y: 10, width: 24, height: 24)
         spinner.frame = NSRect(x: cardSize.width / 2 - 8, y: 160, width: 16, height: 16)
         ok.frame = NSRect(x: cardSize.width - 96, y: cardSize.height - 44, width: 78, height: 28)
+        permissionsButton.frame = NSRect(x: 18, y: cardSize.height - 44, width: 132, height: 28)
 
         load(paths: paths, kind: kind)
     }
@@ -192,7 +205,12 @@ final class PropertiesOverlay: OverlayView {
         }
         values.append(("Created", FormatTools.date(result.created)))
         values.append(("Modified", FormatTools.date(result.modified)))
+        if !result.multiple, let permissions = PermissionsService.read(result.path) {
+            let lock = permissions.locked ? " · Locked" : ""
+            values.append(("Permissions", "\(permissions.symbolic) (\(permissions.octal)) · \(permissions.owner):\(permissions.group)\(lock)"))
+        }
         values.append(("Path", result.path))
+        permissionsButton.isHidden = onEditPermissions == nil
         layoutRows()
     }
 
@@ -242,6 +260,10 @@ final class PropertiesOverlay: OverlayView {
 
     @objc private func okPressed() {
         onDismiss?()
+    }
+
+    @objc private func permissionsPressed() {
+        onEditPermissions?()
     }
 }
 

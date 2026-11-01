@@ -17,6 +17,8 @@ final class CommandBarView: ThemedView {
     var onToggleHidden: (() -> Void)?
     var onToggleExtensions: (() -> Void)?
     var onToggleDetails: (() -> Void)?
+    var onTogglePreview: (() -> Void)?
+    var onFindDuplicates: (() -> Void)?
     var onToggleSidebar: (() -> Void)?
     var onTogglePin: (() -> Void)?
     var onSetTheme: ((ThemePreference) -> Void)?
@@ -46,6 +48,8 @@ final class CommandBarView: ThemedView {
     private var showHidden = false
     private var showExtensions = false
     private var detailsOpen = false
+    private var previewOpen = false
+    private var canFindDuplicates = false
     private var sidebarVisible = true
     private var theme: ThemePreference = .system
     private var pinnedSelection = false
@@ -131,6 +135,8 @@ final class CommandBarView: ThemedView {
         showHidden: Bool,
         showExtensions: Bool,
         detailsOpen: Bool,
+        previewOpen: Bool = false,
+        canFindDuplicates: Bool = false,
         sidebarVisible: Bool,
         theme: ThemePreference
     ) {
@@ -140,6 +146,8 @@ final class CommandBarView: ThemedView {
         self.showHidden = showHidden
         self.showExtensions = showExtensions
         self.detailsOpen = detailsOpen
+        self.previewOpen = previewOpen
+        self.canFindDuplicates = canFindDuplicates
         self.sidebarVisible = sidebarVisible
         self.theme = theme
         self.canPin = canPin
@@ -273,6 +281,13 @@ final class CommandBarView: ThemedView {
         menu.addItem(makeMenuItem("Show file extensions", checked: showExtensions) { [weak self] in
             self?.onToggleExtensions?()
         })
+        menu.addItem(.separator())
+        menu.addItem(makeMenuItem("Details pane", icon: "sidebar.right", checked: detailsOpen) { [weak self] in
+            self?.onToggleDetails?()
+        })
+        menu.addItem(makeMenuItem("Preview pane", icon: "eye", key: "p", modifiers: [.command, .option], checked: previewOpen) { [weak self] in
+            self?.onTogglePreview?()
+        })
         pop(menu, from: viewButton)
     }
 
@@ -284,6 +299,9 @@ final class CommandBarView: ThemedView {
         let menu = NSMenu()
         menu.addItem(makeMenuItem("Details pane", icon: "sidebar.right", checked: detailsOpen) { [weak self] in
             self?.onToggleDetails?()
+        })
+        menu.addItem(makeMenuItem("Preview pane", icon: "eye", key: "p", modifiers: [.command, .option], checked: previewOpen) { [weak self] in
+            self?.onTogglePreview?()
         })
         menu.addItem(makeMenuItem("Navigation pane", icon: "sidebar.left", checked: sidebarVisible) { [weak self] in
             self?.onToggleSidebar?()
@@ -299,6 +317,9 @@ final class CommandBarView: ThemedView {
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Open in Terminal", icon: "terminal") { [weak self] in
             self?.onOpenTerminal?()
+        })
+        menu.addItem(makeMenuItem("Find duplicates…", icon: "doc.on.doc", enabled: canFindDuplicates) { [weak self] in
+            self?.onFindDuplicates?()
         })
         menu.addItem(.separator())
         let themeMenu = NSMenu()
