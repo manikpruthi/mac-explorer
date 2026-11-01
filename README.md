@@ -56,7 +56,10 @@ rewrite of Explorer Neo 1.3.0, built against the same behavioral contract
   recursive properties, Show in Finder,
   and Open in Terminal. The context menu also offers **Open with**, including a compatible-app
   submenu and an “Other…” application chooser, plus a **Share** submenu with all installed
-  share extensions (AirDrop, Mail, Messages, Notes, Reminders, and more).
+  share extensions (AirDrop, Mail, Messages, Notes, Reminders, and more), and a top-level
+  **Quick Share** item that sends files to nearby Android phones via
+  [QuickShare-Mac](https://github.com/manikpruthi/quickshare-mac) (share-extension path with
+  `quickshare://send` fallback; toast on failure).
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
   cut intent never leaves the app.
 - **Scoped, debounced search** with hidden-item support and a 250-result cap. App/package bundles

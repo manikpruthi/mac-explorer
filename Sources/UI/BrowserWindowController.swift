@@ -2306,6 +2306,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if !archive, let shareItem = makeShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }) {
             menu.addItem(shareItem)
         }
+        if !archive {
+            menu.addItem(makeQuickShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }))
+        }
         menu.addItem(.separator())
         if writable {
             menu.addItem(makeMenuItem("Cut", icon: "scissors", key: "x") { [weak self] in
@@ -2417,6 +2420,43 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
         item.submenu = submenu
         return item
+    }
+
+    private func makeQuickShareMenuItem(for urls: [URL]) -> NSMenuItem {
+        makeMenuItem("Quick Share", icon: "paperplane") { [weak self] in
+            self?.shareViaQuickShare(urls: urls)
+        }
+    }
+
+    private func shareViaQuickShare(urls: [URL]) {
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard !fileURLs.isEmpty else {
+            showToast("Quick Share needs files to send", isError: true)
+            return
+        }
+        let selector = NSSelectorFromString("sharingServicesForItems:")
+        if NSSharingService.responds(to: selector),
+           let unmanaged = NSSharingService.perform(selector, with: fileURLs),
+           let services = unmanaged.takeUnretainedValue() as? [NSSharingService],
+           let qs = services.first(where: {
+               $0.title.localizedCaseInsensitiveContains("QuickShare")
+                   || $0.title.localizedCaseInsensitiveContains("Quick Share")
+           }),
+           qs.canPerform(withItems: fileURLs) {
+            qs.perform(withItems: fileURLs)
+            return
+        }
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "tools.macexplorer.quickshare") {
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            NSWorkspace.shared.open(fileURLs, withApplicationAt: appURL, configuration: config, completionHandler: nil)
+            return
+        }
+        if let deepLink = URL(string: "quickshare://send") {
+            NSWorkspace.shared.open(deepLink)
+            return
+        }
+        showToast("Install QuickShare to send via Quick Share", isError: true)
     }
 
     private func open(_ entry: FileEntry, withApplicationAt applicationURL: URL) {
@@ -2612,6 +2652,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if let shareItem = makeShareMenuItem(for: [URL(fileURLWithPath: entry.path)]) {
             menu.addItem(shareItem)
         }
+        menu.addItem(makeQuickShareMenuItem(for: [URL(fileURLWithPath: entry.path)]))
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Properties", icon: "info.circle") { [weak self] in
             self?.showProperties(paths: [entry.path], kind: entry.kind)
