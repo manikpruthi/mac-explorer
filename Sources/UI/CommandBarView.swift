@@ -9,6 +9,7 @@ final class CommandBarView: ThemedView {
     var onPaste: (() -> Void)?
     var onRename: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onUndoDelete: (() -> Void)?
     var onRestore: (() -> Void)?
     var onEmptyTrash: (() -> Void)?
     var onSort: ((SortKey, SortDir) -> Void)?
@@ -28,6 +29,7 @@ final class CommandBarView: ThemedView {
     private let pasteButton = HoverButton(title: "Paste", image: "doc.on.clipboard")
     private let renameButton = HoverButton(title: "Rename", image: "pencil")
     private let deleteButton = HoverButton(title: "Delete", image: "trash")
+    private let undoButton = HoverButton(title: "Undo", image: "arrow.uturn.backward")
     private let restoreButton = HoverButton(title: "Restore", image: "arrow.uturn.backward")
     private let emptyTrashButton = HoverButton(title: "Empty Trash", image: "trash.slash")
     private let sortButton = HoverButton(title: "Sort ▾", image: "arrow.up.arrow.down")
@@ -48,6 +50,7 @@ final class CommandBarView: ThemedView {
     private var theme: ThemePreference = .system
     private var pinnedSelection = false
     private var canPin = false
+    private var canUndoDelete = false
     private var canRestore = false
     private var canEmptyTrash = false
 
@@ -55,7 +58,7 @@ final class CommandBarView: ThemedView {
         super.init(frame: frameRect)
         fillColor = Theme.surface
 
-        let buttons = [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, restoreButton, emptyTrashButton, sortButton, viewButton, detailsButton, overflowButton]
+        let buttons = [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, undoButton, restoreButton, emptyTrashButton, sortButton, viewButton, detailsButton, overflowButton]
         for button in buttons {
             button.font = NSFont.systemFont(ofSize: 12.5)
             addSubview(button)
@@ -78,6 +81,8 @@ final class CommandBarView: ThemedView {
         renameButton.action = #selector(renamePressed)
         deleteButton.target = self
         deleteButton.action = #selector(deletePressed)
+        undoButton.target = self
+        undoButton.action = #selector(undoPressed)
         restoreButton.target = self
         restoreButton.action = #selector(restorePressed)
         emptyTrashButton.target = self
@@ -97,6 +102,7 @@ final class CommandBarView: ThemedView {
         pasteButton.toolTip = "Paste (⌘V)"
         renameButton.toolTip = "Rename (F2)"
         deleteButton.toolTip = "Delete (⌘⌫)"
+        undoButton.toolTip = "Undo Delete (⌘Z)"
         restoreButton.toolTip = "Restore"
         emptyTrashButton.toolTip = "Empty Trash"
         sortButton.toolTip = "Sort"
@@ -114,6 +120,7 @@ final class CommandBarView: ThemedView {
         canModify: Bool,
         canPaste: Bool,
         canPin: Bool,
+        canUndoDelete: Bool = false,
         canRestore: Bool = false,
         canEmptyTrash: Bool = false,
         pinnedSelection: Bool,
@@ -136,6 +143,7 @@ final class CommandBarView: ThemedView {
         self.sidebarVisible = sidebarVisible
         self.theme = theme
         self.canPin = canPin
+        self.canUndoDelete = canUndoDelete
         self.canRestore = canRestore
         self.canEmptyTrash = canEmptyTrash
         self.pinnedSelection = pinnedSelection
@@ -146,6 +154,7 @@ final class CommandBarView: ThemedView {
         pasteButton.isEnabled = canPaste
         renameButton.isEnabled = canModify && selectionCount == 1
         deleteButton.isEnabled = canModify && selectionCount > 0
+        undoButton.isEnabled = canUndoDelete
         restoreButton.isEnabled = canRestore && selectionCount > 0
         emptyTrashButton.isEnabled = canEmptyTrash
         restoreButton.isHidden = !canRestore
@@ -165,6 +174,7 @@ final class CommandBarView: ThemedView {
             (pasteButton, "Paste"),
             (renameButton, "Rename"),
             (deleteButton, "Delete"),
+            (undoButton, "Undo"),
             (sortButton, "Sort ▾"),
             (viewButton, "View ▾"),
             (detailsButton, "Details"),
@@ -176,8 +186,8 @@ final class CommandBarView: ThemedView {
 
         let y: CGFloat = (height - 32) / 2
         var x: CGFloat = 10
-        let widths: [CGFloat] = compact ? [34, 34, 34, 34, 34, 34, 34, 34] : [76, 62, 70, 70, 82, 76, 82, 96]
-        for (index, button) in [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, restoreButton, emptyTrashButton].enumerated() {
+        let widths: [CGFloat] = compact ? [34, 34, 34, 34, 34, 34, 34, 34, 34] : [76, 62, 70, 70, 82, 76, 70, 82, 96]
+        for (index, button) in [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, undoButton, restoreButton, emptyTrashButton].enumerated() {
             button.frame = NSRect(x: x, y: y, width: widths[index], height: 32)
             x += widths[index] + 2
         }
@@ -222,6 +232,7 @@ final class CommandBarView: ThemedView {
     @objc private func pastePressed() { onPaste?() }
     @objc private func renamePressed() { onRename?() }
     @objc private func deletePressed() { onDelete?() }
+    @objc private func undoPressed() { onUndoDelete?() }
     @objc private func restorePressed() { onRestore?() }
     @objc private func emptyTrashPressed() { onEmptyTrash?() }
 

@@ -295,6 +295,13 @@ struct RecentItem: Codable, Hashable, Sendable {
     var parent: String
 }
 
+struct DeletedItem: Codable, Hashable, Sendable {
+    var trashPath: String
+    var originDir: String
+    var name: String
+    var date: Date
+}
+
 struct Preferences: Codable, Sendable {
     var theme: ThemePreference = .system
     var showHidden = false

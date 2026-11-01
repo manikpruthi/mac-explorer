@@ -393,10 +393,20 @@ enum FileService {
 
     // MARK: - Trash / delete
 
+    struct TrashReceipt: Sendable {
+        var result: OpResult
+        var items: [DeletedItem]
+    }
+
     static func trash(_ targets: [String]) -> OpResult {
+        trashWithReceipt(targets).result
+    }
+
+    static func trashWithReceipt(_ targets: [String]) -> TrashReceipt {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var count = 0
         var errors: [String] = []
+        var deleted: [DeletedItem] = []
         for target in targets {
             let resolved = URL(fileURLWithPath: target).standardizedFileURL.path
             let components = resolved.split(separator: "/")
@@ -411,13 +421,27 @@ enum FileService {
                 var origins = loadRestoreOrigins()
                 origins[destination] = PathTools.dirname(resolved)
                 saveRestoreOrigins(origins)
+                deleted.append(
+                    DeletedItem(
+                        trashPath: destination,
+                        originDir: PathTools.dirname(resolved),
+                        name: PathTools.basename(resolved),
+                        date: Date()
+                    )
+                )
                 count += 1
             } catch {
                 errors.append("\(PathTools.basename(target)): \(error.localizedDescription)")
             }
         }
-        return OpResult(ok: errors.isEmpty, error: errors.isEmpty ? nil : errors.joined(separator: " · "),
-                        path: nil, paths: nil, count: count)
+        let result = OpResult(
+            ok: errors.isEmpty,
+            error: errors.isEmpty ? nil : errors.joined(separator: " · "),
+            path: nil,
+            paths: deleted.map(\.trashPath),
+            count: count
+        )
+        return TrashReceipt(result: result, items: deleted)
     }
 
     static func remove(_ targets: [String]) -> OpResult {

@@ -6,12 +6,14 @@ private struct PersistedState: Codable {
     var pinned: [String]?
     var recent: [RecentItem]
     var session: PersistedSession?
+    var lastDeleted: [DeletedItem]?
 
-    init(preferences: Preferences, pinned: [String]?, recent: [RecentItem], session: PersistedSession?) {
+    init(preferences: Preferences, pinned: [String]?, recent: [RecentItem], session: PersistedSession?, lastDeleted: [DeletedItem]?) {
         self.preferences = preferences
         self.pinned = pinned
         self.recent = recent
         self.session = session
+        self.lastDeleted = lastDeleted
     }
 
     init(from decoder: Decoder) throws {
@@ -20,6 +22,7 @@ private struct PersistedState: Codable {
         pinned = try? container.decode([String].self, forKey: .pinned)
         recent = (try? container.decode([RecentItem].self, forKey: .recent)) ?? []
         session = try? container.decode(PersistedSession.self, forKey: .session)
+        lastDeleted = try? container.decode([DeletedItem].self, forKey: .lastDeleted)
     }
 }
 
@@ -31,6 +34,7 @@ final class AppStore {
     var pinned: [String]?
     var recent: [RecentItem] = []
     var session: PersistedSession?
+    var lastDeleted: [DeletedItem]?
 
     private let stateURL: URL
 
@@ -59,6 +63,8 @@ final class AppStore {
         pinned = state.pinned
         recent = state.recent
         session = state.session
+        lastDeleted = state.lastDeleted?.filter { FileManager.default.fileExists(atPath: $0.trashPath) }
+        if lastDeleted?.isEmpty == true { lastDeleted = nil }
     }
 
     func save() {
@@ -78,7 +84,8 @@ final class AppStore {
             preferences: preferences,
             pinned: pinned,
             recent: recent,
-            session: session
+            session: session,
+            lastDeleted: lastDeleted
         )
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? data.write(to: stateURL, options: .atomic)

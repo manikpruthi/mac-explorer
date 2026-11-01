@@ -165,6 +165,24 @@ enum SelfTest {
         check("type labels", FileKinds.typeLabel("a.png", false) == "Image"
               && FileKinds.typeLabel("folder", true) == "File folder")
 
+        let handoffFile = root.appendingPathComponent("note.txt")
+        if let link = QuickShareHandoff.deepLink(for: [handoffFile]),
+           let components = URLComponents(url: link, resolvingAgainstBaseURL: false) {
+            check("quick share deep link", components.scheme == "quickshare" && components.host == "send")
+            if let handoffPath = components.queryItems?.first(where: { $0.name == "handoff" })?.value,
+               let data = FileManager.default.contents(atPath: handoffPath),
+               let payload = try? JSONDecoder().decode(QuickShareHandoff.Payload.self, from: data) {
+                check("quick share handoff carries paths",
+                      payload.paths == [handoffFile.standardizedFileURL.path])
+                try? FileManager.default.removeItem(atPath: handoffPath)
+            } else {
+                check("quick share handoff carries paths", false)
+            }
+        } else {
+            check("quick share deep link", false)
+            check("quick share handoff carries paths", false)
+        }
+
         print("")
         print("\(passes) passed, \(failures) failed")
         return failures == 0 ? 0 : 1

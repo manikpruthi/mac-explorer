@@ -19,8 +19,8 @@ rewrite of Explorer Neo 1.3.0, built against the same behavioral contract
   middle-click close, drag-out detach, tab context menu with “Move tab to new window”, `⌘N` windows.
 - **Navigation bar** with back/forward/up/refresh, clickable breadcrumbs, collapsed long paths, and
   an address bar that switches to edit mode with a single click (`⌘L`, `~` expansion).
-- **Windows 11 command bar** — New, Cut, Copy, Paste, Rename, Delete, Sort, View, Details, and an
-  overflow menu with pin-to-Quick-access, theme, terminal, and About.
+- **Windows 11 command bar** — New, Cut, Copy, Paste, Rename, Delete, Undo Delete, Sort, View,
+  Details, and an overflow menu with pin-to-Quick-access, theme, terminal, and About.
 - **File-aware Cut** from the toolbar, context menu, `⌘X`, and the macOS Edit menu; cut items stay
   dimmed until pasted.
 - **Quick access pinning** from any folder’s context menu or the overflow menu. Pins persist and
@@ -54,12 +54,14 @@ rewrite of Explorer Neo 1.3.0, built against the same behavioral contract
 - **Real file operations** — create folder/text file, inline rename, copy/cut/paste with Windows-style
   unique names, move to Trash, restore and empty Trash, compress to ZIP, permanent delete (confirmed),
   recursive properties, Show in Finder,
-  and Open in Terminal. The context menu also offers **Open with**, including a compatible-app
-  submenu and an “Other…” application chooser, plus a **Share** submenu with all installed
-  share extensions (AirDrop, Mail, Messages, Notes, Reminders, and more), and a top-level
-  **Quick Share** item that sends files to nearby Android phones via
-  [QuickShare-Mac](https://github.com/manikpruthi/quickshare-mac) (share-extension path with
-  `quickshare://send` fallback; toast on failure).
+  and Open in Terminal. **Undo Delete** restores the last Trash operation (single level) from the
+  command bar, the file context menu, or `⌘Z`; it stays available across launches while the trashed
+  files still exist, and disables after a permanent delete or when the Trash copies are gone. The
+  context menu also offers **Open with**, including a compatible-app submenu and an “Other…”
+  application chooser, plus a **Share** submenu with all installed share extensions (AirDrop, Mail,
+  Messages, Notes, Reminders, and more) and, as its first item, **Quick Share**, which sends files
+  to nearby Android phones via [QuickShare-Mac](https://github.com/manikpruthi/quickshare-mac)
+  using a `quickshare://send` handoff (no document-open handoff; HTML and every other file type work).
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
   cut intent never leaves the app.
 - **Scoped, debounced search** with hidden-item support and a 250-result cap. App/package bundles
@@ -138,6 +140,7 @@ Local network access uses `NSLocalNetworkUsageDescription` and the `_smb._tcp` B
 | `⌘⇧N` | New folder |
 | `F2` | Rename |
 | `⌘⌫` or `Delete` | Move to Trash |
+| `⌘Z` | Undo Delete (restore the last Trash operation) |
 | `Backspace` (nothing selected) | Go back / up one folder |
 | `⇧Delete` | Delete permanently (with confirmation) |
 | `⌘I` | Properties |
@@ -168,7 +171,8 @@ folders to move them; hold Option to copy. Dropping files from Finder copies the
   ownership tracking for internal cut intent.
 - `Sources/Services/IconService.swift` — `NSWorkspace` icons, Quick Look thumbnails, bounded
   `NSCache` storage, and inset Dock icon rendering.
-- `Sources/Services/AppStore.swift` — persisted preferences, pins, recents, and window state under
+- `Sources/Services/AppStore.swift` — persisted preferences, pins, recents, window state, and the
+  last Trash receipt (`lastDeleted`) used by Undo Delete, under
   `~/Library/Application Support/Mac Explorer`.
 - `Sources/UI/` — programmatic AppKit: window chrome, tabs, navigation/command/status bars, sidebar,
   file views, Home, Gallery, Network, details pane, Quick Look preview, dialogs, menus, and theme.
@@ -207,11 +211,11 @@ Techniques used:
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 30 filesystem, archive, sorting, volume, and safety assertions
+# 32 filesystem, archive, sorting, volume, and safety assertions
 "$APP" --self-test
 
-# 45 live-controller assertions: navigation, all five views, sorting, toggles,
-# create/rename/copy/cut/paste, marquee selection, Open with, address editing,
+# 50 live-controller assertions: navigation, all five views, sorting, toggles,
+# create/rename/copy/cut/paste, Undo Delete, marquee selection, Open with, address editing,
 # search, dialogs, tabs, keyboard map, Quick Look (keyboard + menu), theme,
 # and menu-bar routing
 "$APP" --ui-test
@@ -246,6 +250,16 @@ theme switching (light/dark/system), and the full keyboard/menu map.
 - macOS platform semantics (TCC prompts, Finder auth) take precedence over Windows quirks.
 
 Not affiliated with Microsoft. Windows and File Explorer are trademarks of Microsoft Corporation.
+
+## Provenance
+
+Mac Explorer is a native Swift/AppKit **rewrite, not a code fork**, of **Explorer Neo 1.3.0** — the
+Electron implementation in the author's `manikpruthi` monorepo under `explorer-neo/`. The behavioral
+contract was captured in [docs/REA-spec.md](docs/REA-spec.md) from public Windows 11 File Explorer
+behavior; the Electron sources were used as the reference for data models, filesystem semantics, and
+interaction details. No Electron/Chromium code, web views, or bundled assets carry over: every view
+and operation here is implemented in AppKit/Swift. Explorer Neo itself was an independent
+implementation, not a fork of another public file manager.
 
 ## License
 

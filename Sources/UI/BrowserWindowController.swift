@@ -299,6 +299,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         commandBar.onPaste = { [weak self] in self?.pasteIntoCurrent() }
         commandBar.onRename = { [weak self] in self?.beginRename() }
         commandBar.onDelete = { [weak self] in self?.trashSelection() }
+        commandBar.onUndoDelete = { [weak self] in self?.undoDelete() }
         commandBar.onRestore = { [weak self] in self?.restoreSelectedItems() }
         commandBar.onEmptyTrash = { [weak self] in self?.emptyTrashBin() }
         commandBar.onSort = { [weak self] key, dir in self?.setSort(key, dir) }
@@ -417,6 +418,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             canModify: tab.location.writePath != nil,
             canPaste: tab.location.writePath != nil && !clipboard.paths.isEmpty && !tab.isSearching,
             canPin: selectedFolderPaths().isEmpty == false && !tab.location.isArchive,
+            canUndoDelete: canUndoDelete,
             canRestore: tab.selected.count > 0 && isTrashLocation(),
             canEmptyTrash: isTrashLocation(),
             pinnedSelection: !selectedFolderPaths().isEmpty && selectedFolderPaths().allSatisfy { store.isPinned($0) },
@@ -1392,12 +1394,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let paths = Array(activeTab.selected)
         guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
         Task.detached(priority: .userInitiated) { [weak self] in
-            let result = FileService.trash(paths)
-            await self?.finishTrash(result)
+            let receipt = FileService.trashWithReceipt(paths)
+            await self?.finishTrash(receipt)
         }
     }
 
-    private func finishTrash(_ result: OpResult) {
+    private func finishTrash(_ receipt: FileService.TrashReceipt) {
+        let result = receipt.result
+        if !receipt.items.isEmpty {
+            store.lastDeleted = receipt.items
+            store.save()
+        }
         if let count = result.count, count > 0 {
             showToast("Moved \(FormatTools.plural(count, "item")) to Trash")
         }
@@ -1421,6 +1428,39 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         reloadActiveTab()
     }
 
+    private var canUndoDelete: Bool {
+        guard let items = store.lastDeleted, !items.isEmpty else { return false }
+        return items.allSatisfy { FileService.exists($0.trashPath) }
+    }
+
+    private func undoDelete() {
+        guard canUndoDelete, let items = store.lastDeleted else {
+            showToast("Nothing to undo", isError: true)
+            return
+        }
+        let trashPaths = items.map(\.trashPath)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = FileService.restoreItems(trashPaths)
+            await self?.finishUndoDelete(result)
+        }
+    }
+
+    private func finishUndoDelete(_ result: OpResult) {
+        if let count = result.count, count > 0 {
+            showToast("Restored \(FormatTools.plural(count, "item"))")
+        }
+        if !result.ok, let error = result.error {
+            showToast(error, isError: true)
+        }
+        let remaining = (store.lastDeleted ?? []).filter { FileService.exists($0.trashPath) }
+        store.lastDeleted = remaining.isEmpty ? nil : remaining
+        store.save()
+        activeTab.selected = []
+        activeTab.focusedPath = nil
+        refresh()
+        updateSelectionDependentUI()
+    }
+
     private func confirmPermanentDelete() {
         let paths = Array(activeTab.selected)
         guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
@@ -1439,6 +1479,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func finishRemove(_ result: OpResult) {
+        store.lastDeleted = nil
+        store.save()
         if let count = result.count, count > 0 {
             showToast("Deleted \(FormatTools.plural(count, "item")) permanently")
         }
@@ -1497,6 +1539,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func finishEmptyTrash(_ result: OpResult) {
+        store.lastDeleted = nil
+        store.save()
         if let count = result.count, count > 0 {
             showToast("Emptied Trash")
         }
@@ -1795,6 +1839,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 return true
             }
             switch chars {
+            case "z":
+                guard !shift else { return false }
+                if canUndoDelete {
+                    undoDelete()
+                    return true
+                }
+                return false
             case "c":
                 copySelection(cut: false)
                 return true
@@ -2228,8 +2279,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     // MARK: - Context menus
 
+    private func prepareContextMenu(_ menu: NSMenu) {
+        menu.autoenablesItems = false
+    }
+
     private func popUp(_ menu: NSMenu, event: NSEvent) {
         guard let view = event.window?.contentView else { return }
+        prepareContextMenu(menu)
         let point = view.convert(event.locationInWindow, from: nil)
         menu.popUp(positioning: nil, at: point, in: view)
     }
@@ -2303,11 +2359,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if isFolder && !archive {
             menu.addItem(makeMenuItem("Open in Terminal", icon: "terminal") { _ = FileService.openTerminal(entry.path) })
         }
-        if !archive, let shareItem = makeShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }) {
-            menu.addItem(shareItem)
-        }
         if !archive {
-            menu.addItem(makeQuickShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }))
+            menu.addItem(makeShareMenuItem(for: paths.map { URL(fileURLWithPath: $0) }))
         }
         menu.addItem(.separator())
         if writable {
@@ -2338,6 +2391,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             menu.addItem(makeMenuItem("Delete permanently", icon: "trash.slash") { [weak self] in
                 self?.activeTab.selected = Set(paths)
                 self?.confirmPermanentDelete()
+            })
+        }
+        if writable {
+            menu.addItem(makeMenuItem(
+                "Undo Delete",
+                icon: "arrow.uturn.backward",
+                key: "z",
+                enabled: canUndoDelete
+            ) { [weak self] in
+                self?.undoDelete()
             })
         }
         if isTrashLocation() {
@@ -2397,35 +2460,37 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         return item
     }
 
-    private func makeShareMenuItem(for urls: [URL]) -> NSMenuItem? {
-        let selector = NSSelectorFromString("sharingServicesForItems:")
-        guard NSSharingService.responds(to: selector) else { return nil }
-        guard let unmanaged = NSSharingService.perform(selector, with: urls),
-              let services = unmanaged.takeUnretainedValue() as? [NSSharingService],
-              !services.isEmpty else { return nil }
+    private func makeShareMenuItem(for urls: [URL]) -> NSMenuItem {
         let item = NSMenuItem(title: "Share", action: nil, keyEquivalent: "")
         item.image = Icons.symbol("square.and.arrow.up", size: 13)
         let submenu = NSMenu(title: "Share")
-        for service in services {
-            let capturedURLs = urls
-            let capturedService = service
-            let target = ClosureTarget {
-                capturedService.perform(withItems: capturedURLs)
+        submenu.addItem(makeMenuItem("Quick Share", icon: "paperplane") { [weak self] in
+            self?.shareViaQuickShare(urls: urls)
+        })
+        if let services = sharingServices(for: urls), !services.isEmpty {
+            submenu.addItem(.separator())
+            for service in services {
+                let capturedURLs = urls
+                let capturedService = service
+                let target = ClosureTarget {
+                    capturedService.perform(withItems: capturedURLs)
+                }
+                let serviceItem = NSMenuItem(title: service.menuItemTitle, action: #selector(ClosureTarget.fire(_:)), keyEquivalent: "")
+                serviceItem.target = target
+                serviceItem.representedObject = target
+                serviceItem.image = service.image
+                submenu.addItem(serviceItem)
             }
-            let serviceItem = NSMenuItem(title: service.menuItemTitle, action: #selector(ClosureTarget.fire(_:)), keyEquivalent: "")
-            serviceItem.target = target
-            serviceItem.representedObject = target
-            serviceItem.image = service.image
-            submenu.addItem(serviceItem)
         }
         item.submenu = submenu
         return item
     }
 
-    private func makeQuickShareMenuItem(for urls: [URL]) -> NSMenuItem {
-        makeMenuItem("Quick Share", icon: "paperplane") { [weak self] in
-            self?.shareViaQuickShare(urls: urls)
-        }
+    private func sharingServices(for urls: [URL]) -> [NSSharingService]? {
+        let selector = NSSelectorFromString("sharingServicesForItems:")
+        guard NSSharingService.responds(to: selector),
+              let unmanaged = NSSharingService.perform(selector, with: urls) else { return nil }
+        return unmanaged.takeUnretainedValue() as? [NSSharingService]
     }
 
     private func shareViaQuickShare(urls: [URL]) {
@@ -2434,29 +2499,31 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             showToast("Quick Share needs files to send", isError: true)
             return
         }
-        let selector = NSSelectorFromString("sharingServicesForItems:")
-        if NSSharingService.responds(to: selector),
-           let unmanaged = NSSharingService.perform(selector, with: fileURLs),
-           let services = unmanaged.takeUnretainedValue() as? [NSSharingService],
-           let qs = services.first(where: {
-               $0.title.localizedCaseInsensitiveContains("QuickShare")
-                   || $0.title.localizedCaseInsensitiveContains("Quick Share")
-           }),
-           qs.canPerform(withItems: fileURLs) {
+        if let qs = sharingServices(for: fileURLs)?.first(where: {
+            $0.title.localizedCaseInsensitiveContains("QuickShare")
+                || $0.title.localizedCaseInsensitiveContains("Quick Share")
+        }), qs.canPerform(withItems: fileURLs) {
             qs.perform(withItems: fileURLs)
             return
         }
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "tools.macexplorer.quickshare") {
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = true
-            NSWorkspace.shared.open(fileURLs, withApplicationAt: appURL, configuration: config, completionHandler: nil)
+        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: QuickShareHandoff.bundleIdentifier) else {
+            showToast("Install QuickShare to send via Quick Share", isError: true)
             return
         }
-        if let deepLink = URL(string: "quickshare://send") {
-            NSWorkspace.shared.open(deepLink)
+        guard let deepLink = QuickShareHandoff.deepLink(for: fileURLs) else {
+            showToast("Could not prepare files for Quick Share", isError: true)
             return
         }
-        showToast("Install QuickShare to send via Quick Share", isError: true)
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.open([deepLink], withApplicationAt: appURL, configuration: config) { [weak self] _, error in
+            guard let error else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                if NSWorkspace.shared.open(deepLink) { return }
+                self.showToast("Could not open Quick Share: \(error.localizedDescription)", isError: true)
+            }
+        }
     }
 
     private func open(_ entry: FileEntry, withApplicationAt applicationURL: URL) {
@@ -2649,10 +2716,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let menu = NSMenu()
         menu.addItem(makeMenuItem("Open", icon: "arrow.up.forward.app") { [weak self] in self?.open(entry) })
         menu.addItem(makeMenuItem("Show in Finder", icon: "folder") { _ = FileService.reveal(entry.path) })
-        if let shareItem = makeShareMenuItem(for: [URL(fileURLWithPath: entry.path)]) {
-            menu.addItem(shareItem)
-        }
-        menu.addItem(makeQuickShareMenuItem(for: [URL(fileURLWithPath: entry.path)]))
+        menu.addItem(makeShareMenuItem(for: [URL(fileURLWithPath: entry.path)]))
         menu.addItem(.separator())
         menu.addItem(makeMenuItem("Properties", icon: "info.circle") { [weak self] in
             self?.showProperties(paths: [entry.path], kind: entry.kind)
@@ -2773,6 +2837,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             report(moved, "cut + paste move")
         } else {
             report(false, "cut + paste move", "copy missing")
+        }
+
+        report(!canUndoDelete, "undo delete disabled before any trash")
+        if let victim = visibleEntries().first(where: { $0.name == "alpha.txt" && !$0.isDirectory }) {
+            let originalPath = victim.path
+            activeTab.selected = [originalPath]
+            activeTab.focusedPath = originalPath
+            updateSelectionDependentUI()
+            trashSelection()
+            let recorded = await waitUntil { !FileService.exists(originalPath) && self.canUndoDelete }
+            report(recorded, "trash records undo state")
+            undoDelete()
+            let restored = await waitUntil { FileService.exists(originalPath) && !self.canUndoDelete }
+            report(restored, "undo delete restores item")
+        } else {
+            report(false, "trash records undo state", "alpha.txt missing")
+            report(false, "undo delete restores item", "alpha.txt missing")
         }
 
         handleSearchChange("smoke")
@@ -2902,8 +2983,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if let file = visibleEntries().first(where: { !$0.isDirectory }) {
             let openWith = makeOpenWithItem(for: file)
             report(openWith.submenu?.items.isEmpty == false, "Open with menu")
+            let share = makeShareMenuItem(for: [URL(fileURLWithPath: file.path)])
+            report(share.submenu?.items.first?.title == "Quick Share", "share submenu starts with Quick Share")
+            let contextMenu = NSMenu()
+            prepareContextMenu(contextMenu)
+            let disabledUndo = makeMenuItem("Undo Delete", icon: "arrow.uturn.backward", enabled: false) {}
+            contextMenu.addItem(disabledUndo)
+            contextMenu.update()
+            report(!disabledUndo.isEnabled, "undo delete stays disabled in context menu")
         } else {
             report(false, "Open with menu", "no file entry")
+            report(false, "share submenu starts with Quick Share", "no file entry")
+            report(false, "undo delete stays disabled in context menu", "no file entry")
         }
 
         if let editMenu = NSApp.mainMenu?.item(withTitle: "Edit")?.submenu,
@@ -2939,6 +3030,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     @objc func closeTabAction(_ sender: Any?) { closeTab(index: activeIndex) }
     @objc func newFolderAction(_ sender: Any?) { createFolder() }
     @objc func deleteAction(_ sender: Any?) { trashSelection() }
+    @objc func undoDeleteAction(_ sender: Any?) { undoDelete() }
     @objc func deletePermanentlyAction(_ sender: Any?) { confirmPermanentDelete() }
     @objc func restoreAction(_ sender: Any?) { restoreSelectedItems() }
     @objc func restoreSelectedAction(_ sender: Any?) { restoreSelectedItems() }
@@ -2982,6 +3074,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return !activeTab.selected.isEmpty
         case #selector(cut(_:)), #selector(deleteAction(_:)), #selector(deletePermanentlyAction(_:)):
             return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
+        case #selector(undoDeleteAction(_:)):
+            return canUndoDelete
         case #selector(restoreAction(_:)), #selector(restoreSelectedAction(_:)):
             return isTrashLocation() && !activeTab.selected.isEmpty
         case #selector(emptyTrashAction(_:)):
