@@ -37,6 +37,8 @@ final class AppStore {
     var lastDeleted: [DeletedItem]?
 
     private let stateURL: URL
+    private let writeQueue = DispatchQueue(label: "tools.macexplorer.state-writer", qos: .utility)
+    private var pendingSave: DispatchWorkItem?
 
     private init() {
         let transient = CommandLine.arguments.contains {
@@ -67,19 +69,25 @@ final class AppStore {
         if lastDeleted?.isEmpty == true { lastDeleted = nil }
     }
 
+    /// Coalesces bursts of changes into one write, off the main thread.
     func save() {
-        writeNow()
+        pendingSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingSave = nil
+            self?.writeNow(inBackground: true)
+        }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
+    /// Writes synchronously (use at termination).
     func flush() {
-        writeNow()
+        pendingSave?.cancel()
+        pendingSave = nil
+        writeNow(inBackground: false)
     }
 
-    private func writeNow() {
-        try? FileManager.default.createDirectory(
-            at: stateURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+    private func writeNow(inBackground: Bool = false) {
         let state = PersistedState(
             preferences: preferences,
             pinned: pinned,
@@ -88,13 +96,25 @@ final class AppStore {
             lastDeleted: lastDeleted
         )
         guard let data = try? JSONEncoder().encode(state) else { return }
-        try? data.write(to: stateURL, options: .atomic)
+        let url = stateURL
+        let write: @Sendable () -> Void = {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try? data.write(to: url, options: .atomic)
+        }
+        if inBackground {
+            writeQueue.async(execute: write)
+        } else {
+            writeQueue.sync(execute: write)
+        }
     }
 
     func saveSession(_ snapshot: PersistedSession) {
         guard session != snapshot else { return }
         session = snapshot
-        writeNow()
+        save()
     }
 
     func ensureDefaults(system: SystemInfo) {

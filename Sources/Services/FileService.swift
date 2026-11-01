@@ -28,8 +28,6 @@ struct PasteOutcome: Sendable {
 }
 
 enum FileService {
-    static let batchSize = 48
-
     // MARK: - Trash restore origins
 
     private static let restoreOriginsLock = NSLock()
@@ -47,13 +45,19 @@ enum FileService {
         restoreOriginsLock.lock()
         defer { restoreOriginsLock.unlock() }
         if let cache = restoreOriginsCache { return cache }
-        guard let data = try? Data(contentsOf: restoreOriginsURL()),
+        let url = restoreOriginsURL()
+        guard let data = try? Data(contentsOf: url),
               let decoded = try? JSONDecoder().decode([String: String].self, from: data) else {
             restoreOriginsCache = [:]
             return [:]
         }
-        restoreOriginsCache = decoded
-        return decoded
+        // Drop entries for items that left the Trash outside this app (e.g. emptied in Finder).
+        let pruned = decoded.filter { FileManager.default.fileExists(atPath: $0.key) }
+        if pruned.count != decoded.count, let encoded = try? JSONEncoder().encode(pruned) {
+            try? encoded.write(to: url, options: .atomic)
+        }
+        restoreOriginsCache = pruned
+        return pruned
     }
 
     private static func saveRestoreOrigins(_ map: [String: String]) {
@@ -72,11 +76,20 @@ enum FileService {
         var size: Int64
         var modified: Date
         var created: Date
+        var isSymlink: Bool = false
+        var allocated: Int64 = 0
+        var linkCount: Int = 1
+        var device: Int64 = 0
+        var inode: UInt64 = 0
     }
 
-    static func statInfo(_ path: String) -> StatInfo? {
+    /// `followSymlinks: false` uses lstat, so a symlink reports itself (isSymlink == true).
+    static func statInfo(_ path: String, followSymlinks: Bool = true) -> StatInfo? {
         var info = stat()
-        let status = path.withCString { stat($0, &info) }
+        let status: Int32 = path.withCString { cPath in
+            if followSymlinks { return stat(cPath, &info) }
+            return lstat(cPath, &info)
+        }
         guard status == 0 else { return nil }
         let modified = Date(
             timeIntervalSince1970: Double(info.st_mtimespec.tv_sec) + Double(info.st_mtimespec.tv_nsec) / 1_000_000_000
@@ -84,15 +97,23 @@ enum FileService {
         let created = Date(
             timeIntervalSince1970: Double(info.st_birthtimespec.tv_sec) + Double(info.st_birthtimespec.tv_nsec) / 1_000_000_000
         )
-        let isDirectory = (info.st_mode & S_IFMT) == S_IFDIR
-        let size = isDirectory ? 0 : Int64(info.st_size)
-        return StatInfo(isDirectory: isDirectory, size: size, modified: modified, created: created)
+        let type = info.st_mode & S_IFMT
+        let isDirectory = type == S_IFDIR
+        return StatInfo(
+            isDirectory: isDirectory,
+            size: isDirectory ? 0 : Int64(info.st_size),
+            modified: modified,
+            created: created,
+            isSymlink: type == S_IFLNK,
+            allocated: Int64(info.st_blocks) * 512,
+            linkCount: Int(info.st_nlink),
+            device: Int64(info.st_dev),
+            inode: UInt64(info.st_ino)
+        )
     }
 
     static func isSymlink(_ path: String) -> Bool {
-        var info = stat()
-        let status = path.withCString { lstat($0, &info) }
-        return status == 0 && (info.st_mode & S_IFMT) == S_IFLNK
+        statInfo(path, followSymlinks: false)?.isSymlink ?? false
     }
 
     static func exists(_ path: String) -> Bool {
@@ -109,12 +130,18 @@ enum FileService {
     }
 
     static func entry(name: String, path: String) -> FileEntry? {
-        guard let info = statInfo(path) else { return nil }
+        guard let link = statInfo(path, followSymlinks: false) else { return nil }
+        return makeEntry(name: name, path: path, link: link)
+    }
+
+    /// Builds an entry from an lstat result; only symlinks pay for a second (following) stat.
+    private static func makeEntry(name: String, path: String, link: StatInfo) -> FileEntry {
+        let info = link.isSymlink ? (statInfo(path) ?? link) : link
         return FileEntry(
             name: name,
             path: path,
             isDirectory: info.isDirectory,
-            isSymlink: isSymlink(path),
+            isSymlink: link.isSymlink,
             size: info.size,
             modified: info.modified,
             created: info.created,
@@ -130,17 +157,10 @@ enum FileService {
         let names = try FileManager.default.contentsOfDirectory(atPath: resolved)
         let collector = EntryCollector(count: names.count)
 
-        var index = 0
-        while index < names.count {
-            let start = index
-            let end = min(index + batchSize, names.count)
-            DispatchQueue.concurrentPerform(iterations: end - start) { offset in
-                let i = start + offset
-                let name = names[i]
-                let fullPath = (resolved as NSString).appendingPathComponent(name)
-                collector.set(entry(name: name, path: fullPath), at: i)
-            }
-            index = end
+        DispatchQueue.concurrentPerform(iterations: names.count) { i in
+            let name = names[i]
+            let fullPath = (resolved as NSString).appendingPathComponent(name)
+            collector.set(entry(name: name, path: fullPath), at: i)
         }
 
         let parent = resolved == "/" ? nil : PathTools.dirname(resolved)
@@ -158,47 +178,50 @@ enum FileService {
         let start = URL(fileURLWithPath: root).standardizedFileURL.path
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let deadline = Date().addingTimeInterval(6)
-        var stack: [(path: String, depth: Int)] = [(start, 0)]
+        // Breadth-first so shallow matches are found before the result limit is hit.
+        var queue: [(path: String, depth: Int)] = [(start, 0)]
+        var head = 0
         var results: [FileEntry] = []
         var truncated = false
 
-        while let current = stack.popLast(), results.count < limit {
-            if Date() > deadline {
+        scan: while head < queue.count, results.count < limit {
+            if Task.isCancelled || Date() > deadline {
                 truncated = true
                 break
             }
+            let current = queue[head]
+            head += 1
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: current.path) else { continue }
-            for name in names {
-                if Date() > deadline {
+            for (offset, name) in names.enumerated() {
+                if offset & 63 == 63, Task.isCancelled || Date() > deadline {
                     truncated = true
-                    break
+                    break scan
                 }
                 if !showHidden && name.hasPrefix(".") { continue }
                 let fullPath = (current.path as NSString).appendingPathComponent(name)
-                guard let info = statInfo(fullPath) else { continue }
+                guard let link = statInfo(fullPath, followSymlinks: false) else { continue }
                 if needle.isEmpty || name.lowercased().contains(needle) {
-                    if let entry = entry(name: name, path: fullPath) {
-                        results.append(entry)
-                        if results.count >= limit {
-                            truncated = true
-                            break
-                        }
+                    results.append(makeEntry(name: name, path: fullPath, link: link))
+                    if results.count >= limit {
+                        truncated = true
+                        break scan
                     }
                 }
-                if info.isDirectory,
-                   !isSymlink(fullPath),
+                // lstat: symlinked directories report isDirectory == false and are not followed.
+                if link.isDirectory,
                    current.depth < 10,
-                   !shouldSkipDirectory(name, showHidden: showHidden, isRoot: current.depth == 0) {
-                    stack.append((fullPath, current.depth + 1))
+                   !shouldSkipDirectory(name, path: fullPath, showHidden: showHidden, isRoot: current.depth == 0) {
+                    queue.append((fullPath, current.depth + 1))
                 }
             }
         }
-        if !stack.isEmpty { truncated = true }
+        if head < queue.count { truncated = true }
         return SearchResponse(root: start, entries: results, truncated: truncated)
     }
 
-    private static func shouldSkipDirectory(_ name: String, showHidden: Bool, isRoot: Bool) -> Bool {
+    private static func shouldSkipDirectory(_ name: String, path: String, showHidden: Bool, isRoot: Bool) -> Bool {
         if FileKinds.isPackageDirectory(name) { return true }
+        if FileKinds.isSkippedSystemPath(path) { return true }
         if isRoot { return false }
         if !showHidden && name.hasPrefix(".") { return true }
         return FileKinds.searchSkip.contains(name)
@@ -207,44 +230,47 @@ enum FileService {
     static func gallery(root: String, limit: Int = 160) -> GalleryResponse {
         let start = URL(fileURLWithPath: root).standardizedFileURL.path
         let deadline = Date().addingTimeInterval(6)
-        var stack: [(path: String, depth: Int)] = [(start, 0)]
+        var queue: [(path: String, depth: Int)] = [(start, 0)]
+        var head = 0
         var images: [FileEntry] = []
         var truncated = false
 
-        while let current = stack.popLast(), images.count < limit {
-            if Date() > deadline {
+        scan: while head < queue.count, images.count < limit {
+            if Task.isCancelled || Date() > deadline {
                 truncated = true
                 break
             }
+            let current = queue[head]
+            head += 1
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: current.path) else { continue }
-            for name in names {
-                if Date() > deadline {
+            for (offset, name) in names.enumerated() {
+                if offset & 63 == 63, Task.isCancelled || Date() > deadline {
                     truncated = true
-                    break
+                    break scan
                 }
                 if name.hasPrefix(".") { continue }
                 let fullPath = (current.path as NSString).appendingPathComponent(name)
-                guard let info = statInfo(fullPath) else { continue }
-                if info.isDirectory {
+                guard let link = statInfo(fullPath, followSymlinks: false) else { continue }
+                if link.isDirectory {
                     if current.depth < 6,
                        !FileKinds.searchSkip.contains(name),
                        !FileKinds.isPackageDirectory(name),
-                       !isSymlink(fullPath) {
-                        stack.append((fullPath, current.depth + 1))
+                       !FileKinds.isSkippedSystemPath(fullPath) {
+                        queue.append((fullPath, current.depth + 1))
                     }
                     continue
                 }
                 guard FileKinds.kind(name, isDirectory: false) == .image else { continue }
-                if let entry = entry(name: name, path: fullPath) {
-                    images.append(entry)
-                    if images.count >= limit {
-                        truncated = true
-                        break
-                    }
+                let entry = makeEntry(name: name, path: fullPath, link: link)
+                guard !entry.isDirectory else { continue }
+                images.append(entry)
+                if images.count >= limit {
+                    truncated = true
+                    break scan
                 }
             }
         }
-        if !stack.isEmpty { truncated = true }
+        if head < queue.count { truncated = true }
         images.sort { $0.modified > $1.modified }
         return GalleryResponse(root: start, entries: images, truncated: truncated)
     }
@@ -407,6 +433,7 @@ enum FileService {
         var count = 0
         var errors: [String] = []
         var deleted: [DeletedItem] = []
+        var origins = loadRestoreOrigins()
         for target in targets {
             let resolved = URL(fileURLWithPath: target).standardizedFileURL.path
             let components = resolved.split(separator: "/")
@@ -418,9 +445,7 @@ enum FileService {
                 var resulting: NSURL?
                 try FileManager.default.trashItem(at: URL(fileURLWithPath: target), resultingItemURL: &resulting)
                 let destination = resulting?.path ?? (home + "/.Trash/" + PathTools.basename(resolved))
-                var origins = loadRestoreOrigins()
                 origins[destination] = PathTools.dirname(resolved)
-                saveRestoreOrigins(origins)
                 deleted.append(
                     DeletedItem(
                         trashPath: destination,
@@ -434,6 +459,7 @@ enum FileService {
                 errors.append("\(PathTools.basename(target)): \(error.localizedDescription)")
             }
         }
+        if !deleted.isEmpty { saveRestoreOrigins(origins) }
         let result = OpResult(
             ok: errors.isEmpty,
             error: errors.isEmpty ? nil : errors.joined(separator: " · "),
@@ -515,6 +541,9 @@ enum FileService {
                 continue
             }
             let isDirectory = statInfo(resolved)?.isDirectory ?? false
+            if plan.cut && (resolved == targetRoot || PathTools.dirname(resolved) == targetRoot) {
+                continue
+            }
             if isDirectory && targetRoot.hasPrefix(resolved + "/") {
                 errors.append("\(PathTools.basename(source)): can’t paste a folder into itself")
                 remaining.append(source)
@@ -588,32 +617,52 @@ enum FileService {
 
     // MARK: - Properties
 
-    private static func folderTotals(_ target: String) -> (size: Int64, files: Int, folders: Int) {
-        let deadline = Date().addingTimeInterval(2.5)
-        var stack = [target]
+    private struct FolderTotals {
         var size: Int64 = 0
+        var allocated: Int64 = 0
         var files = 0
         var folders = 0
-        var inspected = 0
+        var truncated = false
+    }
 
-        while let current = stack.popLast(), Date() < deadline, inspected < 20_000 {
+    private static func folderTotals(_ target: String) -> FolderTotals {
+        let deadline = Date().addingTimeInterval(2.5)
+        let maxItems = 20_000
+        var stack = [target]
+        var totals = FolderTotals()
+        var inspected = 0
+        var seenHardLinks = Set<String>()
+
+        walk: while let current = stack.popLast() {
+            if Date() >= deadline || inspected >= maxItems {
+                totals.truncated = true
+                break
+            }
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: current) else { continue }
             for name in names {
                 inspected += 1
-                if inspected >= 20_000 { break }
+                if inspected >= maxItems {
+                    totals.truncated = true
+                    break walk
+                }
                 let fullPath = (current as NSString).appendingPathComponent(name)
-                if isSymlink(fullPath) { continue }
-                guard let info = statInfo(fullPath) else { continue }
+                guard let info = statInfo(fullPath, followSymlinks: false), !info.isSymlink else { continue }
                 if info.isDirectory {
-                    folders += 1
+                    totals.folders += 1
                     stack.append(fullPath)
                 } else {
-                    size += info.size
-                    files += 1
+                    totals.files += 1
+                    if info.linkCount > 1 {
+                        let key = "\(info.device):\(info.inode)"
+                        if !seenHardLinks.insert(key).inserted { continue }
+                    }
+                    totals.size += info.size
+                    totals.allocated += info.allocated
                 }
             }
         }
-        return (size, files, folders)
+        if !stack.isEmpty { totals.truncated = true }
+        return totals
     }
 
     static func properties(_ targets: [String]) -> PropertiesResult {
@@ -626,6 +675,8 @@ enum FileService {
 
         let multiple = targets.count > 1
         var totalSize: Int64 = 0
+        var totalAllocated: Int64 = 0
+        var truncated = false
         var files = 0
         var folders = 0
         var created = Date.distantFuture
@@ -643,11 +694,14 @@ enum FileService {
             }
             hasDirectory = hasDirectory || info.isDirectory
             hasSymlink = hasSymlink || isSymlink(target)
+            if !info.isDirectory { totalAllocated += info.allocated }
             created = min(created, info.created)
             modified = max(modified, info.modified)
             if info.isDirectory {
                 let totals = folderTotals(target)
                 totalSize += totals.size
+                totalAllocated += totals.allocated
+                truncated = truncated || totals.truncated
                 files += totals.files
                 folders += totals.folders + 1
             } else {
@@ -661,10 +715,10 @@ enum FileService {
             return PropertiesResult(
                 ok: true, error: nil, name: "\(targets.count) items", type: "Multiple items",
                 location: parents.count == 1 ? parents.first! : "Multiple locations",
-                size: totalSize, sizeOnDisk: totalSize, files: files, folders: folders,
+                size: totalSize, sizeOnDisk: totalAllocated, files: files, folders: folders,
                 created: created == .distantFuture ? Date(timeIntervalSince1970: 0) : created,
                 modified: modified, isDirectory: hasDirectory, isSymlink: hasSymlink,
-                path: targets[0], multiple: true
+                path: targets[0], multiple: true, truncated: truncated
             )
         }
 
@@ -673,10 +727,10 @@ enum FileService {
         return PropertiesResult(
             ok: true, error: nil, name: name.isEmpty ? target : name,
             type: FileKinds.typeLabel(name, hasDirectory), location: PathTools.dirname(target),
-            size: totalSize, sizeOnDisk: totalSize, files: files, folders: hasDirectory ? folders : 0,
+            size: totalSize, sizeOnDisk: totalAllocated, files: files, folders: hasDirectory ? folders : 0,
             created: created == .distantFuture ? Date(timeIntervalSince1970: 0) : created,
             modified: modified, isDirectory: hasDirectory, isSymlink: hasSymlink,
-            path: target, multiple: false
+            path: target, multiple: false, truncated: truncated
         )
     }
 
@@ -767,10 +821,6 @@ enum FileService {
 
     // MARK: - Trash restore / empty
 
-    static func restore(_ targets: [String]) -> OpResult {
-        restoreItems(targets)
-    }
-
     static func restoreItems(_ targets: [String]) -> OpResult {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         var count = 0
@@ -779,13 +829,13 @@ enum FileService {
         for target in targets {
             let resolved = URL(fileURLWithPath: target).standardizedFileURL.path
             guard FileService.exists(resolved) else {
-                errors.append("\\(PathTools.basename(target)): no longer exists")
+                errors.append("\(PathTools.basename(target)): no longer exists")
                 continue
             }
             let origin = origins[resolved] ?? home
             let destinationParent = (origin.isEmpty || origin == (home + "/.Trash")) ? home : origin
             guard let info = statInfo(destinationParent), info.isDirectory else {
-                errors.append("\\(PathTools.basename(target)): original location unavailable")
+                errors.append("\(PathTools.basename(target)): original location unavailable")
                 continue
             }
             let isDirectory = statInfo(resolved)?.isDirectory ?? false
@@ -795,21 +845,12 @@ enum FileService {
                 origins.removeValue(forKey: resolved)
                 count += 1
             } catch {
-                errors.append("\\(PathTools.basename(target)): \\(error.localizedDescription)")
+                errors.append("\(PathTools.basename(target)): \(error.localizedDescription)")
             }
         }
         saveRestoreOrigins(origins)
         return OpResult(ok: errors.isEmpty, error: errors.isEmpty ? nil : errors.joined(separator: " · "),
                         path: nil, paths: nil, count: count)
-    }
-
-    static func restoreSelected(_ targets: [String]) -> OpResult { restoreItems(targets) }
-    static func restoreSelectedItem(_ targets: [String]) -> OpResult { restoreItems(targets) }
-    static func restoreFromTrash(_ targets: [String]) -> OpResult { restoreItems(targets) }
-    static func putBack(_ targets: [String]) -> OpResult { restoreItems(targets) }
-
-    static func emptyTrash(trashPath: String? = nil) -> OpResult {
-        emptyTrashBin(at: trashPath)
     }
 
     static func emptyTrashBin(at trashPath: String? = nil) -> OpResult {
@@ -827,7 +868,7 @@ enum FileService {
                 origins.removeValue(forKey: target)
                 count += 1
             } catch {
-                errors.append("\\(name): \\(error.localizedDescription)")
+                errors.append("\(name): \(error.localizedDescription)")
             }
         }
         saveRestoreOrigins(origins)
@@ -835,18 +876,17 @@ enum FileService {
                         path: nil, paths: nil, count: count)
     }
 
-    static func emptyTrashBin() -> OpResult {
-        emptyTrashBin(at: nil)
-    }
-
     // MARK: - Compress
 
-    static func compress(_ sources: [String], destinationParent: String? = nil) -> OpResult {
-        compressToArchive(sources, destinationParent: destinationParent)
-    }
-
-    static func compress(_ sources: [String], into destinationParent: String) -> OpResult {
-        compressToArchive(sources, destinationParent: destinationParent)
+    private static func commonAncestor(_ paths: [String]) -> String {
+        var common = paths[0].split(separator: "/").map(String.init)
+        for path in paths.dropFirst() {
+            let parts = path.split(separator: "/").map(String.init)
+            var count = 0
+            while count < min(common.count, parts.count), common[count] == parts[count] { count += 1 }
+            common = Array(common.prefix(count))
+        }
+        return "/" + common.joined(separator: "/")
     }
 
     static func compressToArchive(_ sources: [String], destinationParent: String? = nil) -> OpResult {
@@ -870,15 +910,21 @@ enum FileService {
         let archivePath = uniqueNewPath(dir: parent, baseName: baseName.isEmpty ? "Archive" : baseName, extension: ".zip")
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
-        var arguments: [String] = ["-r", "-q", archivePath]
-        if allSameParent {
-            process.currentDirectoryURL = URL(fileURLWithPath: parents[0])
-            arguments.append(contentsOf: resolvedSources.map { PathTools.basename($0) })
+        if resolvedSources.count == 1 {
+            // Same as Finder's Compress: keeps extended attributes and resource forks.
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+            process.arguments = ["-c", "-k", "--sequesterRsrc", "--keepParent", resolvedSources[0], archivePath]
         } else {
-            arguments.append(contentsOf: resolvedSources)
+            // Store paths relative to the shared ancestor rather than absolute paths,
+            // and keep symlinks as links (-y) instead of following them.
+            let base = allSameParent ? parents[0] : commonAncestor(parents)
+            let relative = resolvedSources.map { path -> String in
+                base == "/" ? String(path.dropFirst()) : String(path.dropFirst(base.count + 1))
+            }
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+            process.currentDirectoryURL = URL(fileURLWithPath: base)
+            process.arguments = ["-r", "-y", "-q", archivePath] + relative
         }
-        process.arguments = arguments
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -888,8 +934,10 @@ enum FileService {
         } catch {
             return .failure(error.localizedDescription)
         }
+        // Read to EOF before waiting so a chatty tool can't block on a full pipe.
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let output = String(data: data, encoding: .utf8) ?? ""
         if process.terminationStatus != 0 {
             try? FileManager.default.removeItem(atPath: archivePath)
             let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -898,11 +946,4 @@ enum FileService {
         return .success(path: archivePath)
     }
 
-    static func addToArchive(_ sources: [String], destinationParent: String? = nil) -> OpResult {
-        compressToArchive(sources, destinationParent: destinationParent)
-    }
-
-    static func addToArchive(_ sources: [String], into destinationParent: String) -> OpResult {
-        compressToArchive(sources, destinationParent: destinationParent)
-    }
 }

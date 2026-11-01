@@ -52,8 +52,11 @@ views, Electron/Chromium components, or third-party dependencies.
   like Finder. `Space` or `Esc` closes it, arrow keys browse the folder, and `Enter` opens the
   previewed file. The context menu also offers Quick Look, though the `Space` shortcut is faster.
 - **Real file operations** — create folder/text file, inline rename, copy/cut/paste with Windows-style
-  unique names, move to Trash, restore and empty Trash, compress to ZIP, permanent delete (confirmed),
-  recursive properties, Show in Finder,
+  unique names, move to Trash, restore and empty Trash, compress to ZIP (a single item is
+  compressed with `ditto`, like Finder, keeping extended attributes and resource forks; multiple
+  items keep symlinks as links and are stored relative to their shared folder), permanent delete
+  (confirmed), recursive properties with real size on disk (hard links counted once, “At least…”
+  when a very large folder hits the scan limit), Show in Finder,
   and Open in Terminal. **Undo Delete** restores the last Trash operation (single level) from the
   command bar, the file context menu, or `⌘Z`; it stays available across launches while the trashed
   files still exist, and disables after a permanent delete or when the Trash copies are gone. The
@@ -64,8 +67,12 @@ views, Electron/Chromium components, or third-party dependencies.
   using a `quickshare://send` handoff (no document-open handoff; HTML and every other file type work).
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
   cut intent never leaves the app.
-- **Scoped, debounced search** with hidden-item support and a 250-result cap. App/package bundles
-  are treated as opaque.
+- **Scoped, debounced search** with hidden-item support and a 250-result cap. Results are found
+  breadth-first (shallow matches first), and a new keystroke cancels the previous scan. App/package
+  bundles are treated as opaque; `~/Library`, `/Library`, `/System`, and `/private` are skipped by
+  path, so project folders that happen to be named `Library` are still searched.
+- **Safe extension hiding** — with extensions hidden, executables (`.app`, `.exe`, `.pkg`, `.sh`, …)
+  and double extensions (`invoice.pdf.exe`) always show their real extension.
 - **Light, dark, and system themes**, accent `#0067C0` selection, Windows-style window buttons with
   hidden traffic lights, a Dock icon with balanced transparent margins, draggable title strip,
   double-click zoom, and persistent window bounds.
@@ -159,25 +166,30 @@ folders to move them; hold Option to copy. Dropping files from Finder copies the
   UI-test harnesses.
 - `Sources/Models/` — verbatim Swift port of `shared/types.ts` and `shared/filekinds.ts`, sorting and
   formatting helpers.
-- `Sources/Services/FileService.swift` — batched directory listings, bounded search/gallery scans,
+- `Sources/Services/FileService.swift` — parallel directory listings, bounded and cancellable search/gallery scans,
   unique-name copy/paste, EXDEV moves, trash/delete guards, recursive properties, system info,
   and volume ejection.
-- `Sources/Services/DirectoryWatcher.swift` — FSEvents-based live refresh for the active folder.
+- `Sources/Services/DirectoryWatcher.swift` — FSEvents-based live refresh for the active folder,
+  using directory-level events filtered off the main thread.
 - `Sources/Services/ArchiveService.swift` — `bsdtar`-via-`Process` extraction with traversal,
-  entry-count, and uncompressed-size checks; temp cache with 7-day cleanup.
+  entry-count, and uncompressed-size checks from a single listing pass; temp cache with 7-day
+  cleanup of archives not opened recently. Extract All writes straight to the destination.
 - `Sources/Services/NetworkService.swift` — `NetServiceBrowser` SMB discovery plus `/sbin/mount`
   parsing; Finder owns SMB auth and mounting.
 - `Sources/Services/PasteboardService.swift` — `NSPasteboard` file-URL publishing and change-count
   ownership tracking for internal cut intent.
-- `Sources/Services/IconService.swift` — `NSWorkspace` icons, Quick Look thumbnails, bounded
+- `Sources/Services/IconService.swift` — per-type `NSWorkspace` icons for documents (per-path for
+  apps, folders, and extensionless files), Retina-scale Quick Look thumbnails, bounded
   `NSCache` storage, and inset Dock icon rendering.
 - `Sources/Services/AppStore.swift` — persisted preferences, pins, recents, window state, and the
   last Trash receipt (`lastDeleted`) used by Undo Delete, under
-  `~/Library/Application Support/Mac Explorer`.
+  `~/Library/Application Support/Mac Explorer`. Writes are debounced and done off the main thread,
+  with a synchronous flush on quit.
 - `Sources/UI/` — programmatic AppKit: window chrome, tabs, navigation/command/status bars, sidebar,
   file views, Home, Gallery, Network, details pane, Quick Look preview, dialogs, menus, and theme.
 
-There are no storyboards or XIBs. The only subprocesses are `/usr/bin/bsdtar`, `/sbin/mount`, and
+There are no storyboards or XIBs. The only subprocesses are `/usr/bin/bsdtar`, `/usr/bin/ditto`,
+`/usr/bin/zip`, `/sbin/mount`, and
 `NSWorkspace` handoffs to Finder/Terminal.
 
 ## Performance
@@ -195,7 +207,12 @@ The real memory cost is below Finder's even with 16 MB of thumbnails cached. (`p
 ~113 MB idle — that includes reclaimable shared-cache pages and double-counts framework code
 mapped into every AppKit app.) Techniques used:
 
-- Directory metadata is statted in fixed 48-item batches with a bounded worker pool.
+- Directory metadata is statted in one parallel pass, with a single `lstat` per item (symlinks
+  get one extra `stat`).
+- Each tab caches its filtered, sorted listing; selection and focus changes refresh only the
+  affected rows/items instead of reloading the whole view.
+- Live refresh uses directory-level FSEvents (no per-file event flood from busy subtrees), and
+  folder changes don't restart a search that is showing; the listing reloads once search is cleared.
 - Quick Look thumbnails and workspace icons live in bounded `NSCache` instances (8 MB icons,
   16 MB thumbnails); large folders do not inflate memory.
 - The file list, details pane, Gallery, and Network views are created lazily and released when you
@@ -210,7 +227,7 @@ mapped into every AppKit app.) Techniques used:
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 32 filesystem, archive, sorting, volume, and safety assertions
+# 37 filesystem, archive, sorting, volume, and safety assertions
 "$APP" --self-test
 
 # 50 live-controller assertions: navigation, all five views, sorting, toggles,
@@ -245,6 +262,8 @@ theme switching (light/dark/system), and the full keyboard/menu map.
   files but not Windows-style cut intent.
 - Copies made from inside an archive publish the extracted cache path to the clipboard. Paste into
   a real folder promptly, or use **Extract All** for a permanent copy.
+- Documents show the standard icon for their file type; custom icons assigned to individual
+  documents in Finder are not shown (apps and folders are unaffected).
 - No cloud/OneDrive integration, indexed search, preview pane, bulk rename, or permission elevation.
 - macOS platform semantics (TCC prompts, Finder auth) take precedence over Windows quirks.
 

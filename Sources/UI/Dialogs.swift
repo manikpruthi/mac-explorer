@@ -184,8 +184,8 @@ final class PropertiesOverlay: OverlayView {
         typeLabel.stringValue = result.type
         values = [
             ("Location", result.location),
-            ("Size", FormatTools.bytes(result.size)),
-            ("Size on disk", FormatTools.bytes(result.sizeOnDisk)),
+            ("Size", (result.truncated ? "At least " : "") + FormatTools.bytes(result.size)),
+            ("Size on disk", (result.truncated ? "At least " : "") + FormatTools.bytes(result.sizeOnDisk)),
         ]
         if result.isDirectory {
             values.append(("Contains", "\(result.files) file\(result.files == 1 ? "" : "s"), \(result.folders) folder\(result.folders == 1 ? "" : "s")"))

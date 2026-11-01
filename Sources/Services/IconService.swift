@@ -1,5 +1,6 @@
 import AppKit
 import QuickLookThumbnailing
+import UniformTypeIdentifiers
 
 private final class ImageBox: @unchecked Sendable {
     let image: NSImage?
@@ -85,7 +86,27 @@ final class IconService {
         if entry.isDirectory && entry.kind != .app {
             return folderIcon(size: size)
         }
+        // Plain documents share one icon per extension: avoids a synchronous
+        // NSWorkspace lookup (and a cache slot) for every row in large folders.
+        let ext = FileKinds.extensionOf(entry.name)
+        if !entry.isDirectory, !entry.isSymlink, entry.kind != .app, !ext.isEmpty,
+           let type = UTType(filenameExtension: ext) {
+            return typeIcon(type, ext: ext, size: size)
+        }
         return workspaceIcon(forPath: entry.path, size: size)
+    }
+
+    private func typeIcon(_ type: UTType, ext: String, size: CGFloat) -> NSImage {
+        let key = "type:\(ext)|\(Int(size))" as NSString
+        if let cached = iconCache.object(forKey: key) { return cached }
+        let source = NSWorkspace.shared.icon(for: type)
+        let targetSize = NSSize(width: size, height: size)
+        let image = NSImage(size: targetSize, flipped: false) { rect in
+            source.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+            return true
+        }
+        iconCache.setObject(image, forKey: key, cost: Int(size * size * 4))
+        return image
     }
 
     func workspaceIcon(forPath path: String, size: CGFloat) -> NSImage {
@@ -138,7 +159,8 @@ final class IconService {
             completion(nil)
             return
         }
-        let key = "\(entry.path)|\(entry.modified.timeIntervalSince1970)|\(Int(size))"
+        let scale = NSScreen.main?.backingScaleFactor ?? 2
+        let key = "\(entry.path)|\(entry.modified.timeIntervalSince1970)|\(Int(size))@\(Int(scale))"
         let cacheKey = key as NSString
         if let cached = thumbnailCache.object(forKey: cacheKey) {
             completion(cached)
@@ -154,7 +176,7 @@ final class IconService {
         let request = QLThumbnailGenerator.Request(
             fileAt: url,
             size: NSSize(width: size, height: size),
-            scale: 1,
+            scale: scale,
             representationTypes: .thumbnail
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in

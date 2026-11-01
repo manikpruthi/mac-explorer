@@ -18,6 +18,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private var toastView: ToastView?
     private var toastWork: DispatchWorkItem?
     private var searchWork: DispatchWorkItem?
+    private var searchTask: Task<Void, Never>?
+    /// Set when the watched folder changed while search results were showing; the listing
+    /// is reloaded once search is cleared instead of restarting the search on every event.
+    private var listingStaleWhileSearching = false
     private var searchToken = UUID()
     private var listingToken = UUID()
     private var launchStateApplied = false
@@ -398,6 +402,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     private func directoryDidChange() {
         guard case .fs = activeTab.location else { return }
+        if activeTab.isSearching {
+            listingStaleWhileSearching = true
+            return
+        }
+        reloadActiveTab()
+    }
+
+    private func reloadIfStaleAfterSearch() {
+        guard listingStaleWhileSearching else { return }
+        listingStaleWhileSearching = false
         reloadActiveTab()
     }
 
@@ -636,11 +650,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func updateFileList(_ explicitList: FileListView? = nil) {
         guard let list = explicitList ?? fileListView else { return }
         let tab = activeTab
-        if let renamingPath, !visibleEntries().contains(where: { $0.path == renamingPath }) {
+        let visible = visibleEntries()
+        if let renamingPath, !visible.contains(where: { $0.path == renamingPath }) {
             self.renamingPath = nil
         }
         list.update(
-            entries: visibleEntries(),
+            entries: visible,
             mode: tab.view,
             selected: tab.selected,
             focused: tab.focusedPath,
@@ -657,10 +672,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func visibleEntries() -> [FileEntry] {
-        let tab = activeTab
-        let source = tab.isSearching ? tab.searchEntries : tab.entries
-        let filtered = source.filter { preferences.showHidden || !$0.hidden }
-        return sortEntries(filtered, key: tab.sortKey, dir: tab.sortDir, showExtensions: preferences.showExtensions)
+        activeTab.visibleEntries(showHidden: preferences.showHidden, showExtensions: preferences.showExtensions)
     }
 
     private func selectedEntries() -> [FileEntry] {
@@ -767,6 +779,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func reloadActiveTab() {
+        listingStaleWhileSearching = false
         let tab = activeTab
         guard let path = tab.location.readPath else {
             tab.entries = []
@@ -1059,6 +1072,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             tab.searchTruncated = false
             tab.searchRoot = ""
             render()
+            reloadIfStaleAfterSearch()
             return
         }
         let token = UUID()
@@ -1072,8 +1086,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             let query = value
             let hidden = self.preferences.showHidden
             let currentRoot = root
-            Task.detached(priority: .userInitiated) { [weak self] in
+            self.searchTask = Task.detached(priority: .userInitiated) { [weak self] in
                 let response = FileService.search(root: currentRoot, query: query, showHidden: hidden)
+                guard !Task.isCancelled else { return }
                 await self?.applySearch(response, token: token, query: query)
             }
         }
@@ -1084,6 +1099,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func cancelSearchWork() {
         searchWork?.cancel()
         searchWork = nil
+        searchTask?.cancel()
+        searchTask = nil
         searchToken = UUID()
     }
 
@@ -1116,6 +1133,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         activeTab.focusedPath = nil
         cancelSearchWork()
         render()
+        reloadIfStaleAfterSearch()
     }
 
     // MARK: - Gallery / Network
@@ -1517,10 +1535,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         reloadActiveTab()
     }
 
-    private func emptyTrash() {
-        emptyTrashBin()
-    }
-
     private func emptyTrashBin() {
         guard isTrashLocation() else { return }
         let trashPath = systemInfo.trashPath
@@ -1532,7 +1546,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         ) { [weak self] in
             guard let self else { return }
             Task.detached(priority: .userInitiated) { [weak self] in
-                let result = FileService.emptyTrash(trashPath: trashPath)
+                let result = FileService.emptyTrashBin(at: trashPath)
                 await self?.finishEmptyTrash(result)
             }
         }
@@ -1569,7 +1583,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
         let parent = activeTab.location.writePath!
         Task.detached(priority: .userInitiated) { [weak self] in
-            let result = FileService.compress(paths, destinationParent: parent)
+            let result = FileService.compressToArchive(paths, destinationParent: parent)
             await self?.finishCompress(result)
         }
     }
@@ -1588,12 +1602,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         reloadActiveTab()
     }
 
-    private func restoreSelection() { restoreSelectedItems() }
-    private func restoreSelectedItem() { restoreSelectedItems() }
-    private func restoreItems() { restoreSelectedItems() }
-    private func restoreFromTrash() { restoreSelectedItems() }
-    private func putBack() { restoreSelectedItems() }
-    private func compressSelected() { compressSelection() }
 
     private func open(_ entry: FileEntry) {
         let archiveLocation = activeTab.location.isArchive

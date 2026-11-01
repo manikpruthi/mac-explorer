@@ -41,6 +41,12 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private var selected: Set<String> = []
     private var focusedPath: String?
     private var renamingPath: String?
+    /// Forces the next update() to reload every cell (first load, appearance change).
+    private var needsFullReload = true
+    /// Selection/focus as of the last update(); the view mutates `selected`/`focusedPath`
+    /// itself on clicks, so diffs must be against what the cells were last configured with.
+    private var renderedSelected: Set<String> = []
+    private var renderedFocused: String?
     private var cutPaths: Set<String> = []
     private var showExtensions = false
     private var permissionError = false
@@ -251,6 +257,21 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         layer?.backgroundColor = Theme.resolved(Theme.content, for: effectiveAppearance).cgColor
         cancelMarquee()
         let modeChanged = mode != self.mode
+        // A selection/focus-only change refreshes just the affected cells instead of
+        // reloading the whole table or grid.
+        let needsReload = needsFullReload
+            || modeChanged
+            || isSearch != self.isSearch
+            || showExtensions != self.showExtensions
+            || cutPaths != self.cutPaths
+            || entries != self.entries
+        var changedPaths = selected.symmetricDifference(renderedSelected)
+        if focused != renderedFocused {
+            if let old = renderedFocused { changedPaths.insert(old) }
+            if let focused { changedPaths.insert(focused) }
+        }
+        renderedSelected = selected
+        renderedFocused = focused
         self.entries = entries
         self.selected = selected
         self.showExtensions = showExtensions
@@ -281,16 +302,30 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
             buildLoadingState()
         }
 
+        self.focusedPath = focused
+        let changedIndexes: IndexSet = needsReload || changedPaths.isEmpty
+            ? IndexSet()
+            : IndexSet(entries.indices.filter { changedPaths.contains(entries[$0].path) })
         if showGrid {
-            updateGridLayout()
-            collectionView.reloadData()
+            if needsReload {
+                updateGridLayout()
+                collectionView.reloadData()
+            } else if !changedIndexes.isEmpty {
+                collectionView.reloadItems(at: Set(changedIndexes.map { IndexPath(item: $0, section: 0) }))
+            }
             syncCollectionSelection()
         } else {
-            tableView.reloadData()
+            if needsReload {
+                tableView.reloadData()
+            } else if !changedIndexes.isEmpty {
+                tableView.reloadData(
+                    forRowIndexes: changedIndexes,
+                    columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns)
+                )
+            }
             syncTableSelection()
         }
-
-        self.focusedPath = focused
+        needsFullReload = false
         if let focused, focused != lastFocused {
             scrollToFocused(focused)
         }
@@ -380,6 +415,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         layer?.backgroundColor = Theme.resolved(Theme.content, for: effectiveAppearance).cgColor
+        needsFullReload = true
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {

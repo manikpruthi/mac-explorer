@@ -22,7 +22,7 @@ enum FileKinds {
         register(.word, "Microsoft Word document", ["doc", "docx", "rtf", "odt", "pages", "dot", "dotx"])
         register(.excel, "Microsoft Excel worksheet", ["xls", "xlsx", "csv", "ods", "numbers", "tsv"])
         register(.powerpoint, "Microsoft PowerPoint presentation", ["ppt", "pptx", "odp", "key"])
-        register(.archive, "Compressed archive", ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "dmg", "iso", "pkg", "xip"])
+        register(.archive, "Compressed archive", ["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "pkg", "xip"])
         register(.code, "Source file", [
             "js", "mjs", "cjs", "jsx", "ts", "tsx", "json", "jsonc", "html", "htm", "css", "scss", "sass", "less",
             "py", "rb", "go", "rs", "java", "kt", "swift", "m", "mm", "c", "h", "cpp", "hpp", "cs", "php", "sh",
@@ -80,10 +80,17 @@ enum FileKinds {
         baseName(baseName(name))
     }
 
+    /// Extensions that are always shown, so "invoice.pdf.exe" can't masquerade as "invoice.pdf".
+    private static let alwaysVisibleExtensions: Set<String> = [
+        "app", "exe", "msi", "appimage", "command", "tool", "sh", "bat", "cmd", "com", "scr", "pkg", "dmg",
+    ]
+
     static func shouldHideExtension(_ name: String) -> Bool {
         _ = registered
         let ext = extensionOf(name)
-        return !ext.isEmpty && kindByExtension[ext] != nil
+        guard !ext.isEmpty, kindByExtension[ext] != nil, !alwaysVisibleExtensions.contains(ext) else { return false }
+        // Never hide the last extension when another one is in front of it (double extension).
+        return extensionOf(baseName(name)).isEmpty
     }
 
     static func isPackageDirectory(_ name: String) -> Bool {
@@ -91,7 +98,18 @@ enum FileKinds {
         return packageExtensions.contains(extensionOf(name))
     }
 
+    /// Directory names skipped by name at any depth.
     static let searchSkip: Set<String> = [
-        "node_modules", ".git", ".hg", ".svn", ".cache", ".npm", ".Trash", "Library", "System", "private",
+        "node_modules", ".git", ".hg", ".svn", ".cache", ".npm", ".Trash",
     ]
+
+    /// System locations skipped by absolute path only, so a project folder named
+    /// "Library" is still searched.
+    private static let skippedSystemPaths: Set<String> = [
+        NSHomeDirectory() + "/Library", "/Library", "/System", "/private",
+    ]
+
+    static func isSkippedSystemPath(_ path: String) -> Bool {
+        skippedSystemPaths.contains(path)
+    }
 }

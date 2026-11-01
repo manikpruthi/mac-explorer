@@ -118,6 +118,27 @@ enum SelfTest {
         check("properties counts", properties.ok && properties.files >= 2 && properties.isDirectory,
               "\(properties.files) files")
 
+        check("double extension stays visible", !FileKinds.shouldHideExtension("invoice.pdf.exe")
+              && !FileKinds.shouldHideExtension("invoice.pdf.png") && FileKinds.shouldHideExtension("photo.png"))
+        check("project Library folders are searched", !FileKinds.isSkippedSystemPath(root.appendingPathComponent("Library").path))
+
+        let samePlace = root.appendingPathComponent("stay.txt")
+        try? Data("stay".utf8).write(to: samePlace)
+        let sameFolderCut = FileService.paste(
+            plan: FileService.PastePlan(sources: [samePlace.path], cut: true, internalSource: true),
+            into: root.path
+        )
+        check("cut paste into same folder is a no-op", sameFolderCut.result.ok
+              && FileService.exists(samePlace.path)
+              && !FileService.exists(root.appendingPathComponent("stay - Copy.txt").path))
+
+        let missingRestore = FileService.restoreItems([root.appendingPathComponent("does-not-exist").path])
+        check("restore errors name the file", missingRestore.error?.hasPrefix("does-not-exist") == true,
+              missingRestore.error ?? "nil")
+
+        let zipped = FileService.compressToArchive([alpha.path, root.appendingPathComponent("sub/Beta.txt").path])
+        check("multi-folder zip succeeds", zipped.ok && FileService.exists(zipped.path ?? ""), zipped.error ?? "")
+
         let refused = FileService.remove(["/"])
         check("permanent delete refuses root", !refused.ok && (refused.count ?? 0) == 0)
 

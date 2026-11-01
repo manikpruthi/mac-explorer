@@ -128,72 +128,92 @@ enum ArchiveService {
         }
     }
 
-    private static func extractToCache(_ archivePath: String) throws -> String {
+    /// One `bsdtar -tvf` pass: validates every entry path and totals the uncompressed size.
+    private static func validate(_ archivePath: String) throws {
+        let verbose = try run("/usr/bin/bsdtar", ["-tvf", archivePath], timeout: 60)
+        var count = 0
+        var uncompressed: Int64 = 0
+        for line in verbose.split(separator: "\n") {
+            // mode links uid gid size month day time/year name
+            let fields = line.split(maxSplits: 8, omittingEmptySubsequences: true, whereSeparator: { $0 == " " || $0 == "\t" })
+            guard fields.count == 9 else { continue }
+            count += 1
+            guard count <= maxEntries else { throw ArchiveError.tooManyEntries }
+            if let size = Int64(fields[4]) {
+                uncompressed += size
+                if uncompressed > maxUncompressedSize { throw ArchiveError.tooLarge }
+            }
+            var name = String(fields[8])
+            if fields[0].hasPrefix("l"), let arrow = name.range(of: " -> ") {
+                name = String(name[..<arrow.lowerBound])
+            } else if fields[0].hasPrefix("h"), let link = name.range(of: " link to ") {
+                name = String(name[..<link.lowerBound])
+            }
+            try checkEntryPath(name)
+        }
+    }
+
+    private static func checkEntryPath(_ entry: String) throws {
+        var normalized = entry.replacingOccurrences(of: "\\", with: "/")
+        while normalized.hasPrefix("./") { normalized.removeFirst(2) }
+        if normalized.hasPrefix("/") { throw ArchiveError.unsafePaths }
+        if normalized.count >= 2,
+           normalized[normalized.index(normalized.startIndex, offsetBy: 1)] == ":",
+           normalized.first?.isLetter == true {
+            throw ArchiveError.unsafePaths
+        }
+        if normalized.split(separator: "/").contains("..") {
+            throw ArchiveError.unsafePaths
+        }
+    }
+
+    private static func extract(_ archivePath: String, into directory: URL) throws {
+        _ = try run(
+            "/usr/bin/bsdtar",
+            ["-xf", archivePath, "-C", directory.path, "--no-same-owner", "--no-same-permissions"],
+            timeout: 120
+        )
+        if let extracted = directorySize(directory), extracted > maxUncompressedSize {
+            throw ArchiveError.tooLarge
+        }
+    }
+
+    private static func cachedRoot(_ archivePath: String) throws -> URL {
         guard FileKinds.isBrowsableArchive(PathTools.basename(archivePath)) else {
             throw ArchiveError.unsupported
         }
         guard let info = FileService.statInfo(archivePath), !info.isDirectory else {
             throw ArchiveError.missing
         }
-
         let key = cacheKey(archivePath, size: info.size, modified: info.modified)
+        return cacheRoot().appendingPathComponent(key, isDirectory: true)
+    }
+
+    private static func touch(_ url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    private static func extractToCache(_ archivePath: String) throws -> String {
+        let destination = try cachedRoot(archivePath)
         let root = cacheRoot()
-        let destination = root.appendingPathComponent(key, isDirectory: true)
 
         if FileManager.default.fileExists(atPath: destination.path) {
+            // Mark as recently used so cleanup() doesn't remove an archive being browsed.
+            touch(destination)
             return destination.path
         }
 
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let working = root.appendingPathComponent(
-            "\(key).tmp-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000))",
+            "\(destination.lastPathComponent).tmp-\(ProcessInfo.processInfo.processIdentifier)-\(Int(Date().timeIntervalSince1970 * 1000))",
             isDirectory: true
         )
         try? FileManager.default.removeItem(at: working)
         try FileManager.default.createDirectory(at: working, withIntermediateDirectories: true)
 
         do {
-            let listing = try run("/usr/bin/bsdtar", ["-tf", archivePath], timeout: 60)
-            let entries = listing
-                .split(separator: "\n", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                .filter { !$0.isEmpty }
-            guard entries.count <= maxEntries else { throw ArchiveError.tooManyEntries }
-            for entry in entries {
-                var normalized = entry.replacingOccurrences(of: "\\", with: "/")
-                while normalized.hasPrefix("./") { normalized.removeFirst(2) }
-                if normalized.hasPrefix("/") { throw ArchiveError.unsafePaths }
-                if normalized.count >= 2,
-                   normalized[normalized.index(normalized.startIndex, offsetBy: 1)] == ":",
-                   normalized.first?.isLetter == true {
-                    throw ArchiveError.unsafePaths
-                }
-                if normalized.split(separator: "/").contains("..") {
-                    throw ArchiveError.unsafePaths
-                }
-            }
-
-            let verbose = try run("/usr/bin/bsdtar", ["-tvf", archivePath], timeout: 60)
-            var uncompressed: Int64 = 0
-            for line in verbose.split(separator: "\n", omittingEmptySubsequences: false) {
-                let tokens = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
-                guard tokens.count >= 5 else { continue }
-                if let size = Int64(tokens[4]) {
-                    uncompressed += size
-                    if uncompressed > maxUncompressedSize { throw ArchiveError.tooLarge }
-                }
-            }
-
-            _ = try run(
-                "/usr/bin/bsdtar",
-                ["-xf", archivePath, "-C", working.path, "--no-same-owner", "--no-same-permissions"],
-                timeout: 120
-            )
-
-            if let extracted = directorySize(working), extracted > maxUncompressedSize {
-                throw ArchiveError.tooLarge
-            }
-
+            try validate(archivePath)
+            try extract(archivePath, into: working)
             do {
                 try FileManager.default.moveItem(at: working, to: destination)
             } catch {
@@ -211,20 +231,33 @@ enum ArchiveService {
     }
 
     static func extractAll(_ archivePath: String, destinationParent: String) -> OpResult {
-        let opened = openArchive(archivePath)
-        guard opened.ok, let extractRoot = opened.extractRoot else {
-            return .failure(opened.error ?? "Could not read this archive.")
-        }
+        let resolved = URL(fileURLWithPath: archivePath).standardizedFileURL.path
         guard let parentInfo = FileService.statInfo(destinationParent), parentInfo.isDirectory else {
             return .failure("The destination is not a folder.")
         }
-        let name = FileKinds.archiveFolderName(PathTools.basename(archivePath))
+        let name = FileKinds.archiveFolderName(PathTools.basename(resolved))
         let target = FileService.uniqueNewPath(dir: destinationParent, baseName: name.isEmpty ? "Extracted archive" : name)
         do {
-            try FileManager.default.copyItem(atPath: extractRoot, toPath: target)
+            let cached = try cachedRoot(resolved)
+            if FileManager.default.fileExists(atPath: cached.path) {
+                // Already extracted for browsing: copy (APFS clones this cheaply).
+                touch(cached)
+                try FileManager.default.copyItem(atPath: cached.path, toPath: target)
+            } else {
+                // Extract straight into the destination instead of cache + copy.
+                try validate(resolved)
+                let targetURL = URL(fileURLWithPath: target, isDirectory: true)
+                try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: false)
+                do {
+                    try extract(resolved, into: targetURL)
+                } catch {
+                    try? FileManager.default.removeItem(at: targetURL)
+                    throw error
+                }
+            }
             return .success(path: target)
         } catch {
-            return .failure(error.localizedDescription)
+            return .failure((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
         }
     }
 

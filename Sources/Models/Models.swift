@@ -113,6 +113,8 @@ struct PropertiesResult: Sendable {
     var isSymlink: Bool
     var path: String
     var multiple: Bool
+    /// True when a folder walk hit its time/item limit, so totals are a lower bound.
+    var truncated: Bool = false
 }
 
 enum ViewMode: String, Codable, Sendable, CaseIterable {
