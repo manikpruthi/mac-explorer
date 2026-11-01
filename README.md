@@ -1,8 +1,8 @@
 # Mac Explorer
 
-A native macOS file manager with a Windows 11 File Explorer-style UI. This is a Swift/AppKit
-rewrite of Explorer Neo 1.3.0, built against the same behavioral contract
-([docs/REA-spec.md](docs/REA-spec.md)) with no web views and no third-party dependencies.
+A native macOS file manager with a Windows 11 File Explorer-style UI. Built from scratch in
+Swift/AppKit against the behavioral contract in [docs/REA-spec.md](docs/REA-spec.md), with no web
+views, Electron/Chromium components, or third-party dependencies.
 
 ![Home, dark theme](docs/screenshots/home-dark.png)
 ![Applications, light theme](docs/screenshots/apps-light.png)
@@ -120,11 +120,11 @@ build for machines with only the Command Line Tools.
 
 macOS protects `~/.Trash` and other locations from third-party apps. Grant **Full Disk Access** in
 **System Settings → Privacy & Security → Full Disk Access**. The app links directly to that pane
-from permission errors and from failed file operations. The native app uses a new bundle id
-(`tools.macexplorer`), so it needs its own TCC grant separate from the Electron app.
+from permission errors and from failed file operations. Mac Explorer uses bundle id
+`tools.macexplorer` and needs its own TCC grant.
 
-Local network access uses `NSLocalNetworkUsageDescription` and the `_smb._tcp` Bonjour service in
-`Resources/Info.plist`, matching the Electron package’s `extendInfo`.
+Local network access uses `NSLocalNetworkUsageDescription` and the `_smb._tcp` Bonjour service
+declared in `Resources/Info.plist`.
 
 ## Keyboard shortcuts
 
@@ -193,8 +193,7 @@ footprint "$(pgrep -x MacExplorer | head -1)" | grep phys_footprint
 
 The real memory cost is below Finder's even with 16 MB of thumbnails cached. (`ps` RSS reports
 ~113 MB idle — that includes reclaimable shared-cache pages and double-counts framework code
-mapped into every AppKit app.) Electron Explorer Neo measured ~346 MB RSS on the same machine.
-Techniques used:
+mapped into every AppKit app.) Techniques used:
 
 - Directory metadata is statted in fixed 48-item batches with a bounded worker pool.
 - Quick Look thumbnails and workspace icons live in bounded `NSCache` instances (8 MB icons,
@@ -253,13 +252,10 @@ Not affiliated with Microsoft. Windows and File Explorer are trademarks of Micro
 
 ## Provenance
 
-Mac Explorer is a native Swift/AppKit **rewrite, not a code fork**, of **Explorer Neo 1.3.0** — the
-Electron implementation in the author's `manikpruthi` monorepo under `explorer-neo/`. The behavioral
-contract was captured in [docs/REA-spec.md](docs/REA-spec.md) from public Windows 11 File Explorer
-behavior; the Electron sources were used as the reference for data models, filesystem semantics, and
-interaction details. No Electron/Chromium code, web views, or bundled assets carry over: every view
-and operation here is implemented in AppKit/Swift. Explorer Neo itself was an independent
-implementation, not a fork of another public file manager.
+Mac Explorer is an **original project, not a fork**. It is written from scratch in Swift/AppKit.
+The UI follows publicly documented Windows 11 File Explorer behavior and the behavioral contract in
+[docs/REA-spec.md](docs/REA-spec.md); no source code, web views, Electron/Chromium components, or
+bundled assets from another file manager are included.
 
 ## License
 

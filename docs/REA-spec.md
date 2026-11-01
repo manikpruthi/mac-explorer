@@ -59,7 +59,7 @@ Evidence is behavioral, not binary-level. No proprietary assets (Segoe UI Variab
 Cloud/OneDrive/Microsoft 365, drag-out to Finder, shell extensions, indexed search, preview pane, bulk rename, permissions elevation. macOS security prompts and platform semantics win over Windows quirks.
 
 ## Verification
-1. `npm run typecheck` and `npm run build`.
-2. Electron smoke run with screenshot capture across light/dark, Home, folder Details, icons, Gallery, selection, context menu, details pane.
+1. `./build.sh` and the app's `--self-test` / `--ui-test` suites.
+2. Native snapshot capture across light/dark, Home, folder Details, icons, Gallery, selection, context menu, details pane.
 3. Manual parity checklist: region order, tab lifecycle, breadcrumb collapse, sorting, selection model, copy/paste/rename/trash, search, keyboard map, theme persistence.
 4. Explicitly record divergence: fonts fall back to macOS system UI; icons are approximations; no Mica (macOS vibrancy used where available); native menu bar remains.

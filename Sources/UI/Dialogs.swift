@@ -73,7 +73,7 @@ final class AboutOverlay: OverlayView {
         )
         body.alignment = .center
         let meta = makeLabel(
-            "Native AppKit build, ported from Explorer Neo 1.3.0. Not affiliated with Microsoft.",
+            "Native AppKit build. Not affiliated with Microsoft.",
             size: 11.5,
             color: Theme.textSecondary,
             lines: 2
