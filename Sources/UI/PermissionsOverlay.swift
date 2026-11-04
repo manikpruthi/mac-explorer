@@ -100,8 +100,7 @@ final class PermissionsOverlay: OverlayView, DefaultActionOverlay, NSTextFieldDe
         applyButton.action = #selector(applyPressed)
         cancelButton.target = self
         cancelButton.action = #selector(cancelPressed)
-        cancelButton.frame = NSRect(x: width - 196, y: cardSize.height - 48, width: 84, height: 28)
-        applyButton.frame = NSRect(x: width - 106, y: cardSize.height - 48, width: 88, height: 28)
+        layoutButtonRow([cancelButton, applyButton], trailing: width - 18, y: cardSize.height - 48, spacing: 6)
 
         load()
     }

@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 @MainActor
 enum SelfTest {
@@ -207,6 +208,7 @@ enum SelfTest {
         runSearchQueryTests(root: root)
         runDuplicateTests(root: root)
         runPermissionTests(root: root)
+        runDefaultAppTests(root: root)
 
         print("")
         print("\(passes) passed, \(failures) failed")
@@ -296,5 +298,25 @@ enum SelfTest {
         check("recursive keeps file execute bits", recursive.ok && PermissionsService.read(folder.path)?.mode == 0o750
               && child == 0o640 && tool == 0o750,
               "dir \(String(PermissionsService.read(folder.path)?.mode ?? 0, radix: 8)) child \(String(child ?? 0, radix: 8)) tool \(String(tool ?? 0, radix: 8))")
+    }
+
+    /// Read-only checks: they never change a real default app.
+    private static func runDefaultAppTests(root: URL) {
+        let fm = FileManager.default
+        let dir = root.appendingPathComponent("defaults")
+        try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        for name in ["photo.JPG", "Makefile", "noext", "custom.mxeunknownext"] {
+            fm.createFile(atPath: dir.appendingPathComponent(name).path, contents: Data("x".utf8))
+        }
+        let jpeg = FileService.defaultAppContentType(forPath: dir.appendingPathComponent("photo.JPG").path)
+        check("default app type for known extension", jpeg == .jpeg, jpeg?.identifier ?? "nil")
+        check("default app extensions list the file's own first",
+              jpeg.map { FileService.filenameExtensions(of: $0, preferring: "JPG") }?.first == "jpg"
+                  && jpeg.map { FileService.filenameExtensions(of: $0, preferring: "jpg").contains("jpeg") } == true)
+        check("no default app change for extensionless files",
+              FileService.defaultAppContentType(forPath: dir.appendingPathComponent("noext").path) == nil
+                  && FileService.defaultAppContentType(forPath: dir.appendingPathComponent("Makefile").path) == nil)
+        let unknown = FileService.defaultAppContentType(forPath: dir.appendingPathComponent("custom.mxeunknownext").path)
+        check("default app type for unknown extension is dynamic", unknown?.isDynamic == true, unknown?.identifier ?? "nil")
     }
 }

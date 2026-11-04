@@ -79,9 +79,14 @@ views, Electron/Chromium components, or third-party dependencies.
   and Open in Terminal. **Undo Delete** restores the last Trash operation (single level) from the
   command bar, the file context menu, or `⌘Z`; it stays available across launches while the trashed
   files still exist, and disables after a permanent delete or when the Trash copies are gone. The
-  context menu also offers **Open with**, including a compatible-app submenu and an “Other…”
-  application chooser, plus a **Share** submenu with all installed share extensions (AirDrop, Mail,
-  Messages, Notes, Reminders, and more) and, as its first item, **Quick Share**, which sends files
+  context menu also offers **Open with**, including a compatible-app submenu (the current default
+  is checked) and an “Other…” application chooser. Its **Always open .ext files with** submenu
+  changes the system-wide default app for that file type, like Finder’s Get Info › Change All,
+  after a confirmation that lists every extension the change covers (`.jpg` also changes `.jpeg`
+  and `.jpe`); unknown extensions can be assigned through its “Other…” chooser. It is hidden for
+  files without an extension. The context menu also has a **Share** submenu with all installed
+  share extensions (AirDrop, Mail, Messages, Notes, Reminders, and more) and, as its first item,
+  **Quick Share**, which sends files
   to nearby Android phones via [QuickShare-Mac](https://github.com/manikpruthi/quickshare-mac)
   using a `quickshare://send` handoff (no document-open handoff; HTML and every other file type work).
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
@@ -113,7 +118,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.4.0.dmg`](release/Mac-Explorer-1.4.0.dmg)**
+1. Download **[`release/Mac-Explorer-1.5.0.dmg`](release/Mac-Explorer-1.5.0.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -137,7 +142,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.4.0.dmg` and `release/Mac-Explorer-1.4.0.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.5.0.dmg` and `release/Mac-Explorer-1.5.0.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.
@@ -293,11 +298,13 @@ Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with t
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 59 filesystem, archive, sorting, volume, search-query, duplicate, permission, and safety assertions
+# 63 filesystem, archive, sorting, volume, search-query, duplicate, permission, default-app,
+# and safety assertions
 "$APP" --self-test
 
-# 50 live-controller assertions: navigation, all five views, sorting, toggles,
-# create/rename/copy/cut/paste, Undo Delete, marquee selection, Open with, address editing,
+# 52 live-controller assertions: navigation, all five views, sorting, toggles,
+# create/rename/copy/cut/paste, Undo Delete, marquee selection, Open with (and its default-app
+# submenu), button titles fitting without truncation in every view and dialog, address editing,
 # search, dialogs, tabs, keyboard map, Quick Look (keyboard + menu), theme,
 # and menu-bar routing
 "$APP" --ui-test
@@ -336,6 +343,12 @@ theme switching (light/dark/system), and the full keyboard/menu map.
 - The permissions editor can only change items you own; it never asks for administrator rights and
   cannot change the owner or group. ACLs are not shown or edited.
 - Find duplicates stops after 200,000 files or 2 minutes and then reports partial results.
+- **Always open … with** changes the default per content type, so it applies to every extension
+  of that type. macOS sometimes adds its own “change default app?” prompt after the in-app
+  confirmation; the change applies only once you accept it there, and declining it changes
+  nothing. macOS has no API to remove a default once set, only to pick another app. It is not
+  offered for extensionless files (`Makefile`, `README`), whose per-file handler macOS may resolve
+  differently from the type default.
 - No cloud/OneDrive integration, bulk rename, or permission elevation.
 - macOS platform semantics (TCC prompts, Finder auth) take precedence over Windows quirks.
 

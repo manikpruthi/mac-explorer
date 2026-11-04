@@ -159,8 +159,10 @@ final class PropertiesOverlay: OverlayView {
         head.frame = NSRect(x: 18, y: 16, width: 200, height: 20)
         close.frame = NSRect(x: cardSize.width - 36, y: 10, width: 24, height: 24)
         spinner.frame = NSRect(x: cardSize.width / 2 - 8, y: 160, width: 16, height: 16)
-        ok.frame = NSRect(x: cardSize.width - 96, y: cardSize.height - 44, width: 78, height: 28)
-        permissionsButton.frame = NSRect(x: 18, y: cardSize.height - 44, width: 132, height: 28)
+        layoutButtonRow([ok], trailing: cardSize.width - 18, y: cardSize.height - 44, minimumWidth: 78)
+        permissionsButton.frame = NSRect(
+            x: 18, y: cardSize.height - 44, width: permissionsButton.widthToFitTitle(minimum: 132), height: 28
+        )
 
         load(paths: paths, kind: kind)
     }
@@ -303,8 +305,7 @@ final class ConfirmOverlay: OverlayView {
         icon.frame = NSRect(x: 22, y: 24, width: 30, height: 30)
         titleLabel.frame = NSRect(x: 62, y: 26, width: cardSize.width - 86, height: 22)
         messageLabel.frame = NSRect(x: 24, y: 68, width: cardSize.width - 48, height: 70)
-        cancel.frame = NSRect(x: cardSize.width - 196, y: cardSize.height - 48, width: 84, height: 28)
-        confirmButton.frame = NSRect(x: cardSize.width - 106, y: cardSize.height - 48, width: 88, height: 28)
+        layoutButtonRow([cancel, confirmButton], trailing: cardSize.width - 18, y: cardSize.height - 48, spacing: 6)
     }
 
     required init?(coder: NSCoder) {

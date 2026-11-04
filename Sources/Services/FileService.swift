@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 private final class EntryCollector: @unchecked Sendable {
     private let lock = NSLock()
@@ -239,6 +240,57 @@ enum FileService {
         NSWorkspace.shared.urlForApplication(toOpen: URL(fileURLWithPath: path))
     }
 
+    /// The content type whose default app can be changed from this file, or nil when a change
+    /// wouldn't reliably apply to it. Requires a filename extension that belongs to the file's
+    /// type, which rules out extensionless files (`public.data`, or name-based types like
+    /// `Makefile`, where LaunchServices may resolve the per-file handler differently) and generic
+    /// types whose default would reassign every unknown file.
+    static func defaultAppContentType(forPath path: String) -> UTType? {
+        let url = URL(fileURLWithPath: path)
+        let ext = url.pathExtension.lowercased()
+        guard !ext.isEmpty,
+              let type = (try? url.resourceValues(forKeys: [.contentTypeKey]))?.contentType
+                ?? UTType(filenameExtension: ext),
+              ![UTType.item, .data, .content, .text, .directory, .folder, .package].contains(type),
+              type.tags[.filenameExtension]?.contains(where: { $0.lowercased() == ext }) == true
+        else { return nil }
+        return type
+    }
+
+    static func defaultApplication(forContentType type: UTType) -> URL? {
+        NSWorkspace.shared.urlForApplication(toOpen: type)
+    }
+
+    /// Extensions covered by a default-app change for `type`, most common first (`.jpg, .jpeg, .jpe`).
+    static func filenameExtensions(of type: UTType, preferring ext: String) -> [String] {
+        var result = [ext.lowercased()]
+        for tag in type.tags[.filenameExtension] ?? [] where !result.contains(tag.lowercased()) {
+            result.append(tag.lowercased())
+        }
+        return result
+    }
+
+    /// Completes only after macOS applies the change. macOS may first show its own confirmation
+    /// prompt (CoreServicesUIAgent), so this can wait on the user; declining it returns a failure
+    /// with no message.
+    static func setDefaultApplication(at applicationURL: URL, toOpen type: UTType) async -> OpResult {
+        do {
+            try await NSWorkspace.shared.setDefaultApplication(at: applicationURL, toOpen: type)
+            return .success(path: applicationURL.path)
+        } catch let error as CocoaError where error.code == .userCancelled {
+            return OpResult(ok: false, error: nil, path: nil, paths: nil, count: nil)
+        } catch {
+            return .failure("Could not change the default app: \(error.localizedDescription)")
+        }
+    }
+
+    static func applicationName(at url: URL) -> String {
+        let info = Bundle(url: url)?.infoDictionary
+        return (info?["CFBundleDisplayName"] as? String)
+            ?? (info?["CFBundleName"] as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+    }
+
     static func applications(toOpen path: String) -> [(name: String, url: URL)] {
         let urls = NSWorkspace.shared.urlsForApplications(toOpen: URL(fileURLWithPath: path))
         var seen = Set<String>()
@@ -248,10 +300,7 @@ enum FileService {
             let standardized = url.standardizedFileURL.path
             guard !seen.contains(standardized) else { continue }
             seen.insert(standardized)
-            let name = (Bundle(url: url)?.infoDictionary?["CFBundleDisplayName"] as? String)
-                ?? (Bundle(url: url)?.infoDictionary?["CFBundleName"] as? String)
-                ?? url.deletingPathExtension().lastPathComponent
-            result.append((name, url))
+            result.append((applicationName(at: url), url))
         }
         return result.sorted { $0.0.localizedStandardCompare($1.0) == .orderedAscending }
     }

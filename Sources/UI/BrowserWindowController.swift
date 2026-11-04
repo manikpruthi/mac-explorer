@@ -597,7 +597,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             label.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
             button.trailingAnchor.constraint(equalTo: banner.trailingAnchor, constant: -14),
             button.centerYAnchor.constraint(equalTo: banner.centerYAnchor),
-            button.widthAnchor.constraint(equalToConstant: 84),
+            button.widthAnchor.constraint(equalToConstant: button.widthToFitTitle(minimum: 84)),
             button.heightAnchor.constraint(equalToConstant: 26),
         ])
         let line = ThemedView()
@@ -642,7 +642,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             label.trailingAnchor.constraint(lessThanOrEqualTo: clear.leadingAnchor, constant: -8),
             clear.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -14),
             clear.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            clear.widthAnchor.constraint(equalToConstant: 64),
+            clear.widthAnchor.constraint(equalToConstant: clear.widthToFitTitle(minimum: 64)),
             clear.heightAnchor.constraint(equalToConstant: 24),
         ])
         let line = ThemedView()
@@ -2570,8 +2570,74 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         submenu.addItem(makeMenuItem("Other…", icon: "app.badge") { [weak self] in
             self?.chooseApplication(for: entry)
         })
+        if let defaultItem = makeDefaultAppItem(for: entry, apps: Array(apps.prefix(10))) {
+            submenu.addItem(.separator())
+            submenu.addItem(defaultItem)
+        }
         item.submenu = submenu
         return item
+    }
+
+    /// "Always open .ext files with ▸" — changes the system-wide default app for the file's
+    /// content type, like Finder's Get Info › Open with › Change All.
+    private func makeDefaultAppItem(for entry: FileEntry, apps: [(name: String, url: URL)]) -> NSMenuItem? {
+        guard let type = FileService.defaultAppContentType(forPath: entry.path) else { return nil }
+        let ext = (entry.path as NSString).pathExtension.lowercased()
+        let current = FileService.defaultApplication(forContentType: type)?.standardizedFileURL
+        var candidates = apps
+        if let current, !candidates.contains(where: { $0.url.standardizedFileURL == current }) {
+            candidates.insert((FileService.applicationName(at: current), current), at: 0)
+        }
+
+        let item = NSMenuItem(title: "Always open .\(ext) files with", action: nil, keyEquivalent: "")
+        item.image = Icons.symbol("checkmark.seal", size: 13)
+        let submenu = NSMenu()
+        // Keep the current default visibly disabled; submenus autoenable by default.
+        submenu.autoenablesItems = false
+        for app in candidates {
+            let isCurrent = app.url.standardizedFileURL == current
+            let appItem = makeMenuItem(app.name, checked: isCurrent, enabled: !isCurrent) { [weak self] in
+                self?.confirmDefaultApplication(app.url, for: type, extension: ext)
+            }
+            appItem.image = IconService.shared.workspaceIcon(forPath: app.url.path, size: 16)
+            submenu.addItem(appItem)
+        }
+        if !candidates.isEmpty {
+            submenu.addItem(.separator())
+        }
+        submenu.addItem(makeMenuItem("Other…", icon: "app.badge") { [weak self] in
+            self?.chooseApplication(
+                message: "Choose the application that should always open .\(ext) files.",
+                prompt: "Choose"
+            ) { url in
+                self?.confirmDefaultApplication(url, for: type, extension: ext)
+            }
+        })
+        item.submenu = submenu
+        return item
+    }
+
+    private func confirmDefaultApplication(_ applicationURL: URL, for type: UTType, extension ext: String) {
+        let appName = FileService.applicationName(at: applicationURL)
+        let extensions = FileService.filenameExtensions(of: type, preferring: ext).map { ".\($0)" }
+        let shown = extensions.prefix(6).joined(separator: ", ") + (extensions.count > 6 ? ", …" : "")
+        let kind = type.localizedDescription.map { $0.prefix(1).uppercased() + $0.dropFirst() + " files" } ?? "Files"
+        showConfirm(
+            title: "Always open \(extensions[0]) files with \(appName)?",
+            message: "\(kind) (\(shown)) will open with “\(appName)” everywhere on this Mac, including Finder.",
+            confirmLabel: "Change All",
+            dangerous: false
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                let result = await FileService.setDefaultApplication(at: applicationURL, toOpen: type)
+                guard let self else { return }
+                if result.ok {
+                    self.showToast("\(extensions[0]) files now open with \(appName)")
+                } else if let error = result.error {
+                    self.showToast(error, isError: true)
+                }
+            }
+        }
     }
 
     private func makeShareMenuItem(for urls: [URL]) -> NSMenuItem {
@@ -2649,17 +2715,23 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func chooseApplication(for entry: FileEntry) {
+        chooseApplication(message: "Choose an application to open “\(entry.name)”.", prompt: "Open") { [weak self] url in
+            self?.open(entry, withApplicationAt: url)
+        }
+    }
+
+    private func chooseApplication(message: String, prompt: String, onChoose: @escaping (URL) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.application]
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
-        panel.message = "Choose an application to open “\(entry.name)”."
-        panel.prompt = "Open"
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+        panel.message = message
+        panel.prompt = prompt
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return }
-            self?.open(entry, withApplicationAt: url)
+            onChoose(url)
         }
         if let window {
             panel.beginSheetModal(for: window, completionHandler: completion)
@@ -2880,6 +2952,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return condition()
         }
 
+        var clipped: [String] = []
+        func collectClipped(_ surface: String) {
+            root.layoutSubtreeIfNeeded()
+            clipped += clippedButtonTitles(in: root).map { "\(surface): \($0)" }
+        }
+        collectClipped("home")
+
         let fm = FileManager.default
         let testRoot = fm.temporaryDirectory.appendingPathComponent("explorer-neo-ui-\(UUID().uuidString)")
         try? fm.createDirectory(at: testRoot, withIntermediateDirectories: true)
@@ -2984,21 +3063,47 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         handleSearchChange("smoke")
         let searched = await waitUntil { !self.activeTab.searchLoading && self.activeTab.searchQuery == "smoke" }
         report(searched && !self.activeTab.searchEntries.isEmpty, "search", "results=\(activeTab.searchEntries.count)")
+        collectClipped("search")
         clearSearchPressed()
         report(activeTab.searchQuery.isEmpty, "clear search")
 
+        collectClipped("window")
+
         showAbout()
         report(overlay is AboutOverlay, "about dialog")
+        collectClipped("about")
         dismissOverlay()
 
         showProperties(paths: [testRoot.path], kind: .folder)
         report(overlay is PropertiesOverlay, "properties dialog")
         try? await Task.sleep(nanoseconds: 400_000_000)
+        collectClipped("properties")
         dismissOverlay()
 
         showConfirm(title: "Test", message: "Test", confirmLabel: "OK", dangerous: false) {}
         report(overlay is ConfirmOverlay, "confirmation dialog")
         dismissOverlay()
+        for label in ["Delete permanently", "Change All", "Empty Trash"] {
+            showConfirm(title: "Test", message: "Test", confirmLabel: label, dangerous: true) {}
+            collectClipped("confirm")
+            dismissOverlay()
+        }
+
+        showPermissions(paths: [testRoot.appendingPathComponent("alpha.txt").path])
+        collectClipped("permissions")
+        dismissOverlay()
+
+        showDuplicates(root: testRoot.path)
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        collectClipped("duplicates")
+        dismissOverlay()
+
+        navigate(to: .network)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        collectClipped("network")
+        navigate(to: .fs(path: testRoot.path))
+        _ = await waitUntil { !self.activeTab.loading && self.activeTab.location.readPath == testRoot.path }
+        report(clipped.isEmpty, "button titles fit (all views and dialogs)", clipped.joined(separator: "; "))
 
         let tabsBefore = tabs.count
         createTab()
@@ -3108,6 +3213,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if let file = visibleEntries().first(where: { !$0.isDirectory }) {
             let openWith = makeOpenWithItem(for: file)
             report(openWith.submenu?.items.isEmpty == false, "Open with menu")
+            let ext = (file.path as NSString).pathExtension.lowercased()
+            let defaultItem = openWith.submenu?.items.first { $0.title == "Always open .\(ext) files with" }
+            if FileService.defaultAppContentType(forPath: file.path) != nil {
+                let items = defaultItem?.submenu?.items ?? []
+                let checked = items.filter { $0.state == .on }
+                report(items.last?.title == "Other…" && checked.count <= 1 && checked.allSatisfy { !$0.isEnabled },
+                       "Open with offers default-app submenu", file.name)
+            } else {
+                report(defaultItem == nil, "Open with hides default-app submenu for generic types", file.name)
+            }
             let share = makeShareMenuItem(for: [URL(fileURLWithPath: file.path)])
             report(share.submenu?.items.first?.title == "Quick Share", "share submenu starts with Quick Share")
             let contextMenu = NSMenu()
@@ -3118,6 +3233,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             report(!disabledUndo.isEnabled, "undo delete stays disabled in context menu")
         } else {
             report(false, "Open with menu", "no file entry")
+            report(false, "Open with offers default-app submenu", "no file entry")
             report(false, "share submenu starts with Quick Share", "no file entry")
             report(false, "undo delete stays disabled in context menu", "no file entry")
         }

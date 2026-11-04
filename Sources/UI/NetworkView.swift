@@ -179,8 +179,10 @@ final class NetworkView: ThemedView {
         noteLabel.frame = NSRect(x: padding, y: y, width: usable - 40, height: 16)
         y += 28
 
-        form?.frame = NSRect(x: padding, y: y, width: max(220, usable - 100), height: 32)
-        connectButton.frame = NSRect(x: padding + max(220, usable - 100) + 8, y: y + 2, width: 84, height: 28)
+        let connectWidth = connectButton.widthToFitTitle(minimum: 84)
+        let formWidth = max(220, usable - connectWidth - 16)
+        form?.frame = NSRect(x: padding, y: y, width: formWidth, height: 32)
+        connectButton.frame = NSRect(x: padding + formWidth + 8, y: y + 2, width: connectWidth, height: 28)
         y += 38
         hintLabel.frame = NSRect(x: padding, y: y, width: usable, height: 18)
         y += 24
@@ -266,7 +268,8 @@ private final class NetworkRowView: ThemedView {
     override func layout() {
         super.layout()
         icon.frame = NSRect(x: 10, y: (bounds.height - 20) / 2, width: 20, height: 20)
-        actionButton.frame = NSRect(x: bounds.width - 80, y: (bounds.height - 24) / 2, width: 70, height: 24)
+        let actionWidth = actionButton.widthToFitTitle(minimum: 70)
+        actionButton.frame = NSRect(x: bounds.width - 10 - actionWidth, y: (bounds.height - 24) / 2, width: actionWidth, height: 24)
         titleLabel.frame = NSRect(x: 40, y: 10, width: max(0, bounds.width - 130), height: 16)
         subLabel.frame = NSRect(x: 40, y: 26, width: max(0, bounds.width - 130), height: 14)
     }

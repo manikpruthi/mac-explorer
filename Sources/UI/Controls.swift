@@ -14,6 +14,79 @@ final class ClosureTarget: NSObject {
     }
 }
 
+extension NSButton {
+    /// Width that shows the whole title and image without "…", never below `minimum`.
+    /// Borderless buttons get extra room so their hover highlight doesn't hug the text.
+    func widthToFitTitle(minimum: CGFloat = 0) -> CGFloat {
+        let height = bounds.height > 0 ? bounds.height : 28
+        let needed = cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: height)).width
+            ?? fittingSize.width
+        return max(minimum, (needed + (isBordered ? 0 : 16)).rounded(.up))
+    }
+}
+
+/// Lays out visible `buttons` (given left to right) on one row ending at `trailing`, each as
+/// wide as its title needs (at least `minimumWidth`). Returns the x where the row begins.
+@MainActor
+@discardableResult
+func layoutButtonRow(
+    _ buttons: [NSButton],
+    trailing: CGFloat,
+    y: CGFloat,
+    height: CGFloat = 28,
+    spacing: CGFloat = 8,
+    minimumWidth: CGFloat = 84
+) -> CGFloat {
+    var x = trailing + spacing
+    for button in buttons.reversed() where !button.isHidden {
+        let width = button.widthToFitTitle(minimum: minimumWidth)
+        x -= spacing + width
+        button.frame = NSRect(x: x, y: y, width: width, height: height)
+    }
+    return x
+}
+
+/// Same as `layoutButtonRow(_:trailing:…)`, but starting at `leading`. Returns the row's end x.
+@MainActor
+@discardableResult
+func layoutButtonRow(
+    _ buttons: [NSButton],
+    leading: CGFloat,
+    y: CGFloat,
+    height: CGFloat = 28,
+    spacing: CGFloat = 8,
+    minimumWidth: CGFloat = 84
+) -> CGFloat {
+    var x = leading - spacing
+    for button in buttons where !button.isHidden {
+        let width = button.widthToFitTitle(minimum: minimumWidth)
+        x += spacing
+        button.frame = NSRect(x: x, y: y, width: width, height: height)
+        x += width
+    }
+    return x
+}
+
+/// Visible text buttons whose title needs more width than they have (rendered with "…").
+/// Breadcrumbs are skipped: they cap long folder names on purpose and show them in a tooltip.
+/// Used by the UI smoke test to catch clipped labels such as "Delete permanently".
+@MainActor
+func clippedButtonTitles(in view: NSView) -> [String] {
+    var result: [String] = []
+    func walk(_ view: NSView) {
+        if view.isHidden { return }
+        if let button = view as? NSButton, !(button is BreadcrumbButton), !button.title.isEmpty, button.bounds.width > 0, let cell = button.cell {
+            let needed = cell.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: button.bounds.height)).width
+            if needed > button.bounds.width + 0.5 {
+                result.append("“\(button.title)” \(Int(button.bounds.width))<\(Int(needed.rounded(.up)))")
+            }
+        }
+        view.subviews.forEach(walk)
+    }
+    walk(view)
+    return result
+}
+
 @MainActor
 func makeMenuItem(
     _ title: String,

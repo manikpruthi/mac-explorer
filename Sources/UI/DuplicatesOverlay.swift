@@ -92,12 +92,7 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
         spinner.frame = NSRect(x: 18, y: 66, width: 16, height: 16)
         statusLabel.frame = NSRect(x: 42, y: 65, width: width - 60, height: 18)
         scroll.frame = NSRect(x: 12, y: 92, width: width - 24, height: height - 92 - 60)
-        let buttonY = height - 46
-        selectButton.frame = NSRect(x: 18, y: buttonY, width: 150, height: 28)
-        clearButton.frame = NSRect(x: 172, y: buttonY, width: 70, height: 28)
-        revealButton.frame = NSRect(x: 246, y: buttonY, width: 120, height: 28)
-        doneButton.frame = NSRect(x: width - 96, y: buttonY, width: 78, height: 28)
-        trashButton.frame = NSRect(x: width - 96 - 170, y: buttonY, width: 164, height: 28)
+        layoutButtons()
 
         start(showHidden: showHidden)
         updateButtons()
@@ -175,6 +170,14 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
         trashButton.isEnabled = !marked.isEmpty
         trashButton.title = marked.isEmpty ? "Move to Trash" : "Move \(marked.count.formatted()) to Trash"
         revealButton.isEnabled = clickedPath() != nil
+        layoutButtons()
+    }
+
+    /// Sized to the titles, so a long count ("Move 12,345 to Trash") never truncates.
+    private func layoutButtons() {
+        let buttonY = cardSize.height - 46
+        layoutButtonRow([selectButton, clearButton, revealButton], leading: 18, y: buttonY, spacing: 4, minimumWidth: 70)
+        layoutButtonRow([trashButton, doneButton], trailing: cardSize.width - 18, y: buttonY, spacing: 6, minimumWidth: 78)
     }
 
     private func clickedPath() -> String? {
