@@ -190,7 +190,6 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private func selectActive(system: SystemInfo) {
         syncingSelection = true
         defer { syncingSelection = false }
-        let previousRow = outline.selectedRow
         var newRow = -1
         if let activePath, let node = node(for: activePath) {
             let row = outline.row(forItem: node)
@@ -208,11 +207,15 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         } else {
             outline.deselectAll(nil)
         }
-        var toReload = IndexSet()
-        if previousRow >= 0 { toReload.insert(previousRow) }
-        if newRow >= 0 { toReload.insert(newRow) }
-        if !toReload.isEmpty {
-            outline.reloadData(forRowIndexes: toReload, columnIndexes: IndexSet(integer: 0))
+        refreshVisibleCells()
+    }
+
+    private func refreshVisibleCells() {
+        for row in 0..<outline.numberOfRows {
+            guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCellView,
+                  let node = outline.item(atRow: row) as? SidebarNode else { continue }
+            let active = node.isSection ? false : isActive(node)
+            cell.setActive(active)
         }
     }
 
@@ -309,11 +312,13 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
+        refreshVisibleCells()
         guard let node = notification.userInfo?["NSObject"] as? SidebarNode, node.isSection else { return }
         delegate?.sidebarToggleSection(node.title, expanded: false)
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
+        refreshVisibleCells()
         guard let node = notification.userInfo?["NSObject"] as? SidebarNode, node.isSection else { return }
         delegate?.sidebarToggleSection(node.title, expanded: true)
     }
@@ -334,10 +339,18 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
                 outline.expandItem(node)
             }
             outline.deselectAll(nil)
+            refreshVisibleCells()
             return
         }
         guard node.isSelectable else { return }
-        if let path = node.path { activePath = path }
+        if let path = node.path {
+            activePath = path
+            activeKind = nil
+        } else {
+            activeKind = node.kind
+            activePath = nil
+        }
+        refreshVisibleCells()
         delegate?.sidebarSelect(node: node)
     }
 
@@ -438,6 +451,13 @@ final class SidebarCellView: NSView {
         updateColors()
         needsDisplay = true
         needsLayout = true
+    }
+
+    func setActive(_ active: Bool) {
+        guard self.active != active else { return }
+        self.active = active
+        updateColors()
+        needsDisplay = true
     }
 
     private func updateColors() {
