@@ -183,6 +183,8 @@ final class CommandBarView: ThemedView {
             (renameButton, "Rename"),
             (deleteButton, "Delete"),
             (undoButton, "Undo"),
+            (restoreButton, "Restore"),
+            (emptyTrashButton, "Empty Trash"),
             (sortButton, "Sort ▾"),
             (viewButton, "View ▾"),
             (detailsButton, "Details"),
@@ -195,7 +197,9 @@ final class CommandBarView: ThemedView {
         let y: CGFloat = (height - 32) / 2
         var x: CGFloat = 10
         let widths: [CGFloat] = compact ? [34, 34, 34, 34, 34, 34, 34, 34, 34] : [76, 62, 70, 70, 82, 76, 70, 82, 96]
-        for (index, button) in [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, undoButton, restoreButton, emptyTrashButton].enumerated() {
+        let buttons = [newButton, cutButton, copyButton, pasteButton, renameButton, deleteButton, undoButton, restoreButton, emptyTrashButton]
+        for (index, button) in buttons.enumerated() {
+            guard !button.isHidden else { continue }
             button.frame = NSRect(x: x, y: y, width: widths[index], height: 32)
             x += widths[index] + 2
         }

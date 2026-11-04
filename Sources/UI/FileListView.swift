@@ -121,8 +121,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
             guard let self, self.hoveredRow != row else { return }
             let previous = self.hoveredRow
             self.hoveredRow = row
-            if previous >= 0 { self.reloadRow(previous) }
-            if row >= 0 { self.reloadRow(row) }
+            if previous >= 0 { self.updateRowHover(row: previous, isHovered: false) }
+            if row >= 0 { self.updateRowHover(row: row, isHovered: true) }
         }
         tableView.onMarquee = { [weak self] phase, event in
             self?.handleMarquee(phase, event: event) ?? false
@@ -547,9 +547,14 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         delegate?.fileListOpen(entries[row])
     }
 
-    private func reloadRow(_ row: Int) {
+    private func updateRowHover(row: Int, isHovered: Bool) {
         guard row >= 0, row < entries.count else { return }
-        tableView.reloadData(forRowIndexes: IndexSet(integer: row), columnIndexes: IndexSet(integersIn: 0..<tableView.numberOfColumns))
+        if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? FileRowView {
+            rowView.hovered = isHovered
+        }
+        if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NameCellView {
+            cell.setHovered(isHovered)
+        }
     }
 
     private func handleTableContext(row: Int, event: NSEvent) {
@@ -1071,7 +1076,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
             editor.removeFromSuperview()
             self?.delegate?.fileListCancelRename()
         }
-        if mode.isGrid {
+        if mode.isGrid || mode == .tiles {
             collectionView.addSubview(editor)
         } else {
             tableView.addSubview(editor)
@@ -1341,7 +1346,9 @@ final class IconCollectionView: NSCollectionView {
 final class FileRowView: NSTableRowView {
     var isFocused = false
     var cut = false
-    var hovered = false
+    var hovered = false {
+        didSet { if oldValue != hovered { needsDisplay = true } }
+    }
     var marqueeSelected = false {
         didSet { if oldValue != marqueeSelected { needsDisplay = true } }
     }
@@ -1438,6 +1445,12 @@ final class NameCellView: NSView {
         checkbox.state = selected ? .on : .off
         checkbox.isHidden = !(selected || hovering)
         needsLayout = true
+    }
+
+    func setHovered(_ hovered: Bool) {
+        guard hovering != hovered else { return }
+        hovering = hovered
+        checkbox.isHidden = !(selected || hovering)
     }
 
     override func updateTrackingAreas() {
@@ -1842,94 +1855,6 @@ final class TableTextCellView: NSView {
             width: max(0, bounds.width - leadingPadding - trailingPadding),
             height: 18
         )
-    }
-}
-
-@MainActor
-final class DetailsHeaderView: ThemedView {
-    var onSort: ((SortKey) -> Void)?
-    private var sortKey: SortKey = .name
-    private var sortDir: SortDir = .asc
-    private let dateWidth: CGFloat = 200
-    private let typeWidth: CGFloat = 180
-    private let sizeWidth: CGFloat = 100
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        fillColor = Theme.content
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    func update(sortKey: SortKey, sortDir: SortDir) {
-        self.sortKey = sortKey
-        self.sortDir = sortDir
-        needsDisplay = true
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        Theme.hairline.setStroke()
-        let line = NSBezierPath()
-        line.move(to: NSPoint(x: 0, y: bounds.height - 0.5))
-        line.line(to: NSPoint(x: bounds.width, y: bounds.height - 0.5))
-        line.lineWidth = 1
-        line.stroke()
-
-        let rows: [(SortKey, String, NSTextAlignment, CGFloat)] = [
-            (.name, "Name", .left, 16),
-            (.modified, "Date modified", .left, 8),
-            (.type, "Type", .left, 8),
-            (.size, "Size", .right, 10),
-        ]
-        var x: CGFloat = 0
-        let nameWidth = max(240, bounds.width - (dateWidth + typeWidth + sizeWidth))
-        let widths: [CGFloat] = [nameWidth, dateWidth, typeWidth, sizeWidth]
-        for (index, row) in rows.enumerated() {
-            let width = widths[index]
-            let isSorted = row.0 == sortKey
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 12),
-                .foregroundColor: isSorted ? Theme.textPrimary : Theme.textSecondary,
-            ]
-            let text = row.1 as NSString
-            let textSize = text.size(withAttributes: attributes)
-            let textX: CGFloat
-            if row.2 == .right {
-                textX = x + width - textSize.width - row.3
-            } else {
-                textX = x + row.3
-            }
-            text.draw(at: NSPoint(x: textX, y: (bounds.height - textSize.height) / 2), withAttributes: attributes)
-            if isSorted {
-                let symbolName = sortDir == .asc ? "chevron.up" : "chevron.down"
-                if let image = Icons.symbol(symbolName, size: 9) {
-                    image.isTemplate = true
-                    let tinted = NSImage(size: image.size, flipped: false) { rect in
-                        image.draw(in: rect)
-                        Theme.textSecondary.set()
-                        rect.fill(using: .sourceAtop)
-                        return true
-                    }
-                    tinted.draw(in: NSRect(x: textX + textSize.width + 4, y: (bounds.height - 9) / 2, width: 9, height: 9))
-                }
-            }
-            x += width
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        let nameWidth = max(240, bounds.width - (dateWidth + typeWidth + sizeWidth))
-        let x = point.x
-        let key: SortKey
-        if x < nameWidth { key = .name }
-        else if x < nameWidth + dateWidth { key = .modified }
-        else if x < nameWidth + dateWidth + typeWidth { key = .type }
-        else { key = .size }
-        onSort?(key)
     }
 }
 

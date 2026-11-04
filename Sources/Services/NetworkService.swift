@@ -125,34 +125,20 @@ enum NetworkService {
     }
 
     static func mountedShares() -> [MountedShare] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/sbin/mount")
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
+        let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeTypeNameKey, .volumeIsLocalKey]
+        guard let urls = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: Array(keys), options: []) else {
             return []
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-
         var shares: [MountedShare] = []
-        let pattern = #"^(.+) on (.+) \(([^,)]+)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        for line in text.split(separator: "\n") {
-            let value = String(line)
-            let range = NSRange(value.startIndex..<value.endIndex, in: value)
-            guard let match = regex.firstMatch(in: value, range: range), match.numberOfRanges >= 4 else { continue }
-            guard let fsRange = Range(match.range(at: 3), in: value),
-                  let pathRange = Range(match.range(at: 2), in: value) else { continue }
-            let fsType = String(value[fsRange]).trimmingCharacters(in: .whitespaces).lowercased()
-            guard fsType.contains("smbfs") || fsType.contains("afpfs") || fsType.contains("nfs") || fsType.contains("webdav") else { continue }
-            let mountPath = String(value[pathRange])
+        for url in urls {
+            guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+            let fsType = (values.volumeTypeName ?? "").lowercased()
+            guard fsType.contains("smbfs") || fsType.contains("afpfs") || fsType.contains("nfs") || fsType.contains("webdav") else {
+                continue
+            }
+            let mountPath = url.path
             shares.append(MountedShare(
-                name: PathTools.basename(mountPath),
+                name: values.volumeName ?? PathTools.basename(mountPath),
                 path: mountPath,
                 fsType: fsType
             ))

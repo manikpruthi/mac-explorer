@@ -406,6 +406,8 @@ enum PathTools {
 }
 
 enum FormatTools {
+    private static let lock = NSLock()
+
     nonisolated(unsafe) private static let byteFormatter: ByteCountFormatter = {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
@@ -418,7 +420,7 @@ enum FormatTools {
     static func bytes(_ value: Int64) -> String {
         guard value >= 0 else { return "—" }
         if value < 1000 { return "\(value) bytes" }
-        return byteFormatter.string(fromByteCount: value)
+        return lock.withLock { byteFormatter.string(fromByteCount: value) }
     }
 
     private static let dateFormatter: DateFormatter = {
@@ -437,12 +439,12 @@ enum FormatTools {
 
     static func date(_ date: Date) -> String {
         guard date.timeIntervalSince1970 > 0 else { return "—" }
-        return dateFormatter.string(from: date)
+        return lock.withLock { dateFormatter.string(from: date) }
     }
 
     static func shortDate(_ date: Date) -> String {
         guard date.timeIntervalSince1970 > 0 else { return "—" }
-        return shortDateFormatter.string(from: date)
+        return lock.withLock { shortDateFormatter.string(from: date) }
     }
 
     static func plural(_ count: Int, _ word: String) -> String {

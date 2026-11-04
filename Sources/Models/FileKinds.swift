@@ -77,7 +77,11 @@ enum FileKinds {
     }
 
     static func archiveFolderName(_ name: String) -> String {
-        baseName(baseName(name))
+        let lower = name.lowercased()
+        if lower.hasSuffix(".tar.gz") || lower.hasSuffix(".tar.bz2") || lower.hasSuffix(".tar.xz") || lower.hasSuffix(".tar.zst") {
+            return baseName(baseName(name))
+        }
+        return baseName(name)
     }
 
     /// Extensions that are always shown, so "invoice.pdf.exe" can't masquerade as "invoice.pdf".

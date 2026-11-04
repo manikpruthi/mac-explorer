@@ -15,8 +15,10 @@ final class DetailsPaneView: ThemedView {
     private let emptyLabel = makeLabel("Select a file or folder to see its details.", size: 12.5, color: Theme.textSecondary, lines: 3)
     private let nameLabel = makeLabel("", size: 14, weight: .semibold, lines: 2)
     private let subLabel = makeLabel("", size: 12, color: Theme.textSecondary)
-    private var rowLabels: [(label: NSTextField, value: NSTextField)] = []
-    private var actionButtons: [NSButton] = []
+    private var rowPool: [(label: NSTextField, value: NSTextField)] = []
+    private var activeRowCount = 0
+    private var actionPool: [HoverButton] = []
+    private var activeActionCount = 0
     private var entries: [FileEntry] = []
     private var isArchive = false
 
@@ -57,13 +59,8 @@ final class DetailsPaneView: ThemedView {
     }
 
     private func rebuild() {
-        rowLabels.forEach {
-            $0.label.removeFromSuperview()
-            $0.value.removeFromSuperview()
-        }
-        rowLabels = []
-        actionButtons.forEach { $0.removeFromSuperview() }
-        actionButtons = []
+        activeRowCount = 0
+        activeActionCount = 0
         targets.removeAll()
 
         let hasSelection = !entries.isEmpty
@@ -73,6 +70,7 @@ final class DetailsPaneView: ThemedView {
         subLabel.isHidden = !hasSelection
         guard hasSelection else {
             previewImage.image = nil
+            hideUnusedPoolItems()
             return
         }
 
@@ -110,32 +108,64 @@ final class DetailsPaneView: ThemedView {
                 addAction("Show in Finder", icon: "folder") { [weak self] in self?.onReveal?(single) }
             }
         }
+
+        hideUnusedPoolItems()
+    }
+
+    private func hideUnusedPoolItems() {
+        for i in activeRowCount..<rowPool.count {
+            rowPool[i].label.isHidden = true
+            rowPool[i].value.isHidden = true
+        }
+        for i in activeActionCount..<actionPool.count {
+            actionPool[i].isHidden = true
+        }
     }
 
     private func addRow(_ title: String, _ value: String) {
-        let label = makeLabel(title, size: 12, color: Theme.textSecondary)
-        let valueLabel = makeLabel(value, size: 12, lines: 3)
-        valueLabel.cell?.wraps = true
-        valueLabel.lineBreakMode = .byWordWrapping
-        valueLabel.isSelectable = true
-        content.addSubview(label)
-        content.addSubview(valueLabel)
-        rowLabels.append((label, valueLabel))
+        let pair: (label: NSTextField, value: NSTextField)
+        if activeRowCount < rowPool.count {
+            pair = rowPool[activeRowCount]
+            pair.label.stringValue = title
+            pair.value.stringValue = value
+            pair.label.isHidden = false
+            pair.value.isHidden = false
+        } else {
+            let label = makeLabel(title, size: 12, color: Theme.textSecondary)
+            let valueLabel = makeLabel(value, size: 12, lines: 3)
+            valueLabel.cell?.wraps = true
+            valueLabel.lineBreakMode = .byWordWrapping
+            valueLabel.isSelectable = true
+            content.addSubview(label)
+            content.addSubview(valueLabel)
+            pair = (label, valueLabel)
+            rowPool.append(pair)
+        }
+        activeRowCount += 1
     }
 
     private func addAction(_ title: String, icon: String, action: @escaping () -> Void) {
-        let button = HoverButton(title: title, image: icon, target: nil, action: nil)
-        button.font = NSFont.systemFont(ofSize: 12)
-        button.isBordered = true
-        button.bezelStyle = .rounded
-        button.controlSize = .small
-        button.hoverColor = nil
+        let button: HoverButton
+        if activeActionCount < actionPool.count {
+            button = actionPool[activeActionCount]
+            button.title = title
+            button.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+            button.isHidden = false
+        } else {
+            button = HoverButton(title: title, image: icon, target: nil, action: nil)
+            button.font = NSFont.systemFont(ofSize: 12)
+            button.isBordered = true
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.hoverColor = nil
+            content.addSubview(button)
+            actionPool.append(button)
+        }
         let target = ClosureTarget(action)
         button.target = target
         button.action = #selector(ClosureTarget.fire(_:))
         targets.append(target)
-        content.addSubview(button)
-        actionButtons.append(button)
+        activeActionCount += 1
     }
 
     private var targets: [ClosureTarget] = []
@@ -168,7 +198,8 @@ final class DetailsPaneView: ThemedView {
         subLabel.frame = NSRect(x: padding, y: nameLabel.frame.maxY + 2, width: usable, height: 16)
 
         var y = subLabel.frame.maxY + 14
-        for row in rowLabels {
+        for i in 0..<activeRowCount {
+            let row = rowPool[i]
             row.label.frame = NSRect(x: padding, y: y + 1, width: 96, height: 16)
             let valueWidth = usable - 102
             let valueHeight = measure(row.value.stringValue, width: valueWidth, font: row.value.font ?? Theme.smallFont, maxLines: 3)
@@ -178,7 +209,8 @@ final class DetailsPaneView: ThemedView {
 
         y += 10
         var x = padding
-        for button in actionButtons {
+        for i in 0..<activeActionCount {
+            let button = actionPool[i]
             let size = button.fittingSize
             let widthValue = min(usable, max(76, size.width + 16))
             button.frame = NSRect(x: x, y: y, width: widthValue, height: 28)

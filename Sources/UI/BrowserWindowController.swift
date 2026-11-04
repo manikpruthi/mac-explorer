@@ -396,7 +396,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         updateProgress()
         updateDirectoryWatch()
         window?.contentView?.needsDisplay = true
-        persistSession()
     }
 
     private func updateDirectoryWatch() {
@@ -471,12 +470,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     // MARK: - Content
 
     private func renderContent() {
-        bannerView?.removeFromSuperview()
-        bannerView = nil
-        searchHeaderView?.removeFromSuperview()
-        searchHeaderView = nil
-        contentHost?.removeFromSuperview()
-        contentHost = nil
         let tab = activeTab
 
         if tab.location != .gallery {
@@ -499,35 +492,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             fileListView = nil
         }
 
-        var top = mainPane.topAnchor
-
-        if tab.location.isArchive, !tab.isSearching, let archivePath = tab.location.archivePath {
-            let banner = makeArchiveBanner(archivePath: archivePath)
-            banner.translatesAutoresizingMaskIntoConstraints = false
-            mainPane.addSubview(banner)
-            NSLayoutConstraint.activate([
-                banner.topAnchor.constraint(equalTo: mainPane.topAnchor),
-                banner.leadingAnchor.constraint(equalTo: mainPane.leadingAnchor),
-                banner.trailingAnchor.constraint(equalTo: mainPane.trailingAnchor),
-                banner.heightAnchor.constraint(equalToConstant: 36),
-            ])
-            bannerView = banner
-            top = banner.bottomAnchor
-        }
-
-        if tab.isSearching {
-            let header = makeSearchHeader()
-            header.translatesAutoresizingMaskIntoConstraints = false
-            mainPane.addSubview(header)
-            NSLayoutConstraint.activate([
-                header.topAnchor.constraint(equalTo: top),
-                header.leadingAnchor.constraint(equalTo: mainPane.leadingAnchor),
-                header.trailingAnchor.constraint(equalTo: mainPane.trailingAnchor),
-                header.heightAnchor.constraint(equalToConstant: 36),
-            ])
-            searchHeaderView = header
-            top = header.bottomAnchor
-        }
+        let wantsArchive = tab.location.isArchive && !tab.isSearching && tab.location.archivePath != nil
+        let wantsSearch = tab.isSearching
 
         let content: NSView
         if wantsFileList {
@@ -566,6 +532,49 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         } else {
             homeView.update(quickItems: quickItems(), recent: store.recent, volumes: systemInfo.volumes)
             content = homeView
+        }
+
+        let structureChanged = contentHost !== content
+            || wantsArchive != (bannerView != nil)
+            || wantsSearch != (searchHeaderView != nil)
+
+        guard structureChanged else { return }
+
+        bannerView?.removeFromSuperview()
+        bannerView = nil
+        searchHeaderView?.removeFromSuperview()
+        searchHeaderView = nil
+        contentHost?.removeFromSuperview()
+        contentHost = nil
+
+        var top = mainPane.topAnchor
+
+        if wantsArchive, let archivePath = tab.location.archivePath {
+            let banner = makeArchiveBanner(archivePath: archivePath)
+            banner.translatesAutoresizingMaskIntoConstraints = false
+            mainPane.addSubview(banner)
+            NSLayoutConstraint.activate([
+                banner.topAnchor.constraint(equalTo: mainPane.topAnchor),
+                banner.leadingAnchor.constraint(equalTo: mainPane.leadingAnchor),
+                banner.trailingAnchor.constraint(equalTo: mainPane.trailingAnchor),
+                banner.heightAnchor.constraint(equalToConstant: 36),
+            ])
+            bannerView = banner
+            top = banner.bottomAnchor
+        }
+
+        if wantsSearch {
+            let header = makeSearchHeader()
+            header.translatesAutoresizingMaskIntoConstraints = false
+            mainPane.addSubview(header)
+            NSLayoutConstraint.activate([
+                header.topAnchor.constraint(equalTo: top),
+                header.leadingAnchor.constraint(equalTo: mainPane.leadingAnchor),
+                header.trailingAnchor.constraint(equalTo: mainPane.trailingAnchor),
+                header.heightAnchor.constraint(equalToConstant: 36),
+            ])
+            searchHeaderView = header
+            top = header.bottomAnchor
         }
 
         content.translatesAutoresizingMaskIntoConstraints = false
@@ -931,6 +940,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         } else {
             activeTab.push(location)
         }
+        persistSession()
         reloadActiveTab()
     }
 
@@ -959,6 +969,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         renamingPath = nil
         cancelSearchWork()
         activeTab.goHistory(delta)
+        persistSession()
         reloadActiveTab()
     }
 
@@ -1055,18 +1066,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         guard index >= 0, index < tabs.count, index != activeIndex else { return }
         renamingPath = nil
         cancelSearchWork()
-        let previousTab = activeTab
-        activeTab.searchQuery = ""
-        activeTab.searchEntries = []
-        activeTab.searchLoading = false
-        activeTab.searchTruncated = false
         activeIndex = index
-        previousTab.entries = []
-        previousTab.searchEntries = []
-        activeTab.searchQuery = ""
-        activeTab.searchEntries = []
-        activeTab.searchLoading = false
-        activeTab.searchTruncated = false
         persistSession()
         if activeTab.entries.isEmpty, activeTab.location.readPath != nil {
             reloadActiveTab()
@@ -2006,7 +2006,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
         if event.keyCode == 51 || event.keyCode == 117 {
             if tab.selected.isEmpty {
-                if tab.historyIndex > 0 { goHistory(-1) } else { goUp() }
+                if event.keyCode == 51 {
+                    if tab.historyIndex > 0 { goHistory(-1) } else { goUp() }
+                    return true
+                }
+                return false
             } else if shift {
                 confirmPermanentDelete()
             } else {
@@ -3031,12 +3035,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             report(false, "copy + paste with unique name", "folder missing")
         }
 
-        if let copy = visibleEntries().first(where: { $0.name == "Smoke Folder - Copy" }) {
+        if let copy = visibleEntries().first(where: { $0.name == "Smoke Folder - Copy" }),
+           let targetFolder = visibleEntries().first(where: { $0.name == "Smoke Folder" }) {
             activeTab.selected = [copy.path]
             copySelection(cut: true)
-            paste(into: testRoot.path)
+            paste(into: targetFolder.path)
             let moved = await waitUntil {
-                self.visibleEntries().contains { $0.name == "Smoke Folder - Copy - Copy" }
+                !self.visibleEntries().contains { $0.name == "Smoke Folder - Copy" }
+                    && FileService.exists((targetFolder.path as NSString).appendingPathComponent("Smoke Folder - Copy"))
             }
             report(moved, "cut + paste move")
         } else {

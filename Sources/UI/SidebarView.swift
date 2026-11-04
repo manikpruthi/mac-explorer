@@ -61,6 +61,8 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var activeKind: SidebarNode.Kind?
     private var syncingSelection = false
     private var pinnedPaths: Set<String> = []
+    private var lastPinned: [String] = []
+    private var lastVolumePaths: [String] = []
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -119,8 +121,10 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         quickAccessOpen: Bool,
         thisPcOpen: Bool
     ) {
+        let volumePaths = system.volumes.map(\.path)
+        let structureChanged = roots.isEmpty || pinned != lastPinned || volumePaths != lastVolumePaths
         pinnedPaths = Set(pinned)
-        nodesByPath = [:]
+
         activePath = nil
         activeKind = nil
         switch activeLocation {
@@ -133,49 +137,52 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
             if path == system.trashPath { activeKind = .trash }
         }
 
-        let quickSection = SidebarNode(kind: .section, title: "Quick access", icon: "")
-        let specialByPath = Dictionary(uniqueKeysWithValues: system.specialFolders.map { ($0.path, $0) })
-        for path in pinned {
-            let label = specialByPath[path]?.label ?? (path == system.home ? "Home" : PathTools.basename(path))
-            let icon = specialByPath[path].map { iconForKey($0.key) } ?? "folder"
-            let node = SidebarNode(kind: .folder, title: label, icon: icon, path: path)
-            node.canPin = true
-            quickSection.children.append(node)
-            nodesByPath[path] = node
-        }
-        if quickSection.children.isEmpty {
-            let empty = SidebarNode(kind: .placeholder, title: "Nothing pinned yet", icon: "")
-            quickSection.children.append(empty)
-        }
+        if structureChanged {
+            lastPinned = pinned
+            lastVolumePaths = volumePaths
+            nodesByPath = [:]
 
-        let pcSection = SidebarNode(kind: .section, title: "This PC", icon: "")
-        let volumeNodes = system.volumes.map { volume -> SidebarNode in
-            let node = SidebarNode(kind: .volume, title: volume.name, icon: "internaldrive", path: volume.path)
-            if volume.total > 0 {
-                node.volumeText = "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))"
+            let quickSection = SidebarNode(kind: .section, title: "Quick access", icon: "")
+            let specialByPath = Dictionary(uniqueKeysWithValues: system.specialFolders.map { ($0.path, $0) })
+            for path in pinned {
+                let label = specialByPath[path]?.label ?? (path == system.home ? "Home" : PathTools.basename(path))
+                let icon = specialByPath[path].map { iconForKey($0.key) } ?? "folder"
+                let node = SidebarNode(kind: .folder, title: label, icon: icon, path: path)
+                node.canPin = true
+                quickSection.children.append(node)
+                nodesByPath[path] = node
             }
-            return node
-        }
-        pcSection.children.append(contentsOf: volumeNodes)
-        if system.specialFolders.contains(where: { $0.key == "trash" }) {
-            pcSection.children.append(SidebarNode(kind: .trash, title: "Trash", icon: "trash", path: system.trashPath))
-        }
+            if quickSection.children.isEmpty {
+                let empty = SidebarNode(kind: .placeholder, title: "Nothing pinned yet", icon: "")
+                quickSection.children.append(empty)
+            }
 
-        let roots: [SidebarNode] = [
-            SidebarNode(kind: .home, title: "Home", icon: "house"),
-            SidebarNode(kind: .gallery, title: "Gallery", icon: "photo.on.rectangle"),
-            SidebarNode(kind: .network, title: "Network", icon: "network"),
-            quickSection,
-            pcSection,
-        ]
-        self.roots = roots
+            let pcSection = SidebarNode(kind: .section, title: "This PC", icon: "")
+            let volumeNodes = system.volumes.map { volume -> SidebarNode in
+                let node = SidebarNode(kind: .volume, title: volume.name, icon: "internaldrive", path: volume.path)
+                if volume.total > 0 {
+                    node.volumeText = "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))"
+                }
+                return node
+            }
+            pcSection.children.append(contentsOf: volumeNodes)
+            if system.specialFolders.contains(where: { $0.key == "trash" }) {
+                pcSection.children.append(SidebarNode(kind: .trash, title: "Trash", icon: "trash", path: system.trashPath))
+            }
 
-        outline.reloadData()
-        for node in [roots[0], roots[1], roots[2], quickSection, pcSection] {
-            outline.expandItem(node)
+            let roots: [SidebarNode] = [
+                SidebarNode(kind: .home, title: "Home", icon: "house"),
+                SidebarNode(kind: .gallery, title: "Gallery", icon: "photo.on.rectangle"),
+                SidebarNode(kind: .network, title: "Network", icon: "network"),
+                quickSection,
+                pcSection,
+            ]
+            self.roots = roots
+
+            outline.reloadData()
+            if quickAccessOpen { outline.expandItem(quickSection) } else { outline.collapseItem(quickSection) }
+            if thisPcOpen { outline.expandItem(pcSection) } else { outline.collapseItem(pcSection) }
         }
-        if !quickAccessOpen { outline.collapseItem(quickSection) }
-        if !thisPcOpen { outline.collapseItem(pcSection) }
 
         selectActive(system: system)
     }
@@ -183,24 +190,30 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private func selectActive(system: SystemInfo) {
         syncingSelection = true
         defer { syncingSelection = false }
+        let previousRow = outline.selectedRow
+        var newRow = -1
         if let activePath, let node = node(for: activePath) {
             let row = outline.row(forItem: node)
-            if row >= 0 {
-                outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-                outline.scrollRowToVisible(row)
-                return
-            }
+            if row >= 0 { newRow = row }
         }
-        if let activeKind {
+        if newRow < 0, let activeKind {
             for root in roots where root.kind == activeKind {
                 let row = outline.row(forItem: root)
-                if row >= 0 {
-                    outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-                    return
-                }
+                if row >= 0 { newRow = row; break }
             }
         }
-        outline.deselectAll(nil)
+        if newRow >= 0 {
+            outline.selectRowIndexes(IndexSet(integer: newRow), byExtendingSelection: false)
+            outline.scrollRowToVisible(newRow)
+        } else {
+            outline.deselectAll(nil)
+        }
+        var toReload = IndexSet()
+        if previousRow >= 0 { toReload.insert(previousRow) }
+        if newRow >= 0 { toReload.insert(newRow) }
+        if !toReload.isEmpty {
+            outline.reloadData(forRowIndexes: toReload, columnIndexes: IndexSet(integer: 0))
+        }
     }
 
     private func node(for path: String) -> SidebarNode? {

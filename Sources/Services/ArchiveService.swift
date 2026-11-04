@@ -145,9 +145,13 @@ enum ArchiveService {
             }
             var name = String(fields[8])
             if fields[0].hasPrefix("l"), let arrow = name.range(of: " -> ") {
+                let target = String(name[arrow.upperBound...])
                 name = String(name[..<arrow.lowerBound])
+                try checkEntryPath(target)
             } else if fields[0].hasPrefix("h"), let link = name.range(of: " link to ") {
+                let target = String(name[link.upperBound...])
                 name = String(name[..<link.lowerBound])
+                try checkEntryPath(target)
             }
             try checkEntryPath(name)
         }

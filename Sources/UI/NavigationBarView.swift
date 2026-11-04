@@ -261,7 +261,7 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
         case .home:
             return [CrumbModel(label: "Home", path: system.home, icon: "house", isCurrent: true)]
         case .gallery:
-            return [CrumbModel(label: "Gallery", path: system.home, icon: "photo.on.rectangle", isCurrent: true)]
+            return [CrumbModel(label: "Gallery", path: system.picturesPath, icon: "photo.on.rectangle", isCurrent: true)]
         case .network:
             return [CrumbModel(label: "Network", path: "", icon: "network", isCurrent: true)]
         case .archive(let archivePath, let extractRoot, let path):

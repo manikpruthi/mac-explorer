@@ -118,7 +118,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.5.0.dmg`](release/Mac-Explorer-1.5.0.dmg)**
+1. Download **[`release/Mac-Explorer-1.5.1.dmg`](release/Mac-Explorer-1.5.1.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -142,7 +142,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.5.0.dmg` and `release/Mac-Explorer-1.5.0.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.5.1.dmg` and `release/Mac-Explorer-1.5.1.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.
@@ -223,8 +223,8 @@ used.
 - `Sources/Services/ArchiveService.swift` — `bsdtar`-via-`Process` extraction with traversal,
   entry-count, and uncompressed-size checks from a single listing pass; temp cache with 7-day
   cleanup of archives not opened recently. Extract All writes straight to the destination.
-- `Sources/Services/NetworkService.swift` — `NetServiceBrowser` SMB discovery plus `/sbin/mount`
-  parsing; Finder owns SMB auth and mounting.
+- `Sources/Services/NetworkService.swift` — `NetServiceBrowser` SMB discovery and in-process
+  mounted volume inspection via `FileManager.mountedVolumeURLs`; Finder owns SMB auth and mounting.
 - `Sources/Services/SearchService.swift` — search query parser (wildcards, quoted phrases, filters),
   Spotlight `MDQuery` lookup scoped to the current folder, the bounded folder walk, merging, and
   relevance ranking.
@@ -246,8 +246,7 @@ used.
   (Properties, Permissions, Find duplicates), menus, and theme.
 
 There are no storyboards or XIBs. The only subprocesses are `/usr/bin/bsdtar`, `/usr/bin/ditto`,
-`/usr/bin/zip`, `/sbin/mount`, and
-`NSWorkspace` handoffs to Finder/Terminal.
+`/usr/bin/zip`, and `NSWorkspace` handoffs to Finder/Terminal.
 
 ## Performance
 
