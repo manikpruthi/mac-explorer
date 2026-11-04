@@ -149,7 +149,9 @@ final class DetailsPaneView: ThemedView {
         if activeActionCount < actionPool.count {
             button = actionPool[activeActionCount]
             button.title = title
-            button.image = NSImage(systemSymbolName: icon, accessibilityDescription: title)
+            let symbol = Icons.symbol(icon, size: 15)
+            symbol?.isTemplate = true
+            button.image = symbol
             button.isHidden = false
         } else {
             button = HoverButton(title: title, image: icon, target: nil, action: nil)

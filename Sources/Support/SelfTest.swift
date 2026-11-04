@@ -182,6 +182,22 @@ enum SelfTest {
             check("archive rejects traversal", !opened.ok, opened.error ?? "")
         }
 
+        let linkStaging = root.appendingPathComponent("link-staging")
+        try? fm.createDirectory(at: linkStaging.appendingPathComponent("pkg/bin"), withIntermediateDirectories: true)
+        try? fm.createDirectory(at: linkStaging.appendingPathComponent("pkg/lib"), withIntermediateDirectories: true)
+        try? Data("x".utf8).write(to: linkStaging.appendingPathComponent("pkg/lib/tool.js"))
+        try? fm.createSymbolicLink(atPath: linkStaging.appendingPathComponent("pkg/bin/tool").path,
+                                   withDestinationPath: "../lib/tool.js")
+        let linkArchive = root.appendingPathComponent("links.tar")
+        if runProcess("/usr/bin/bsdtar", ["-cf", linkArchive.path, "pkg"], cwd: linkStaging) {
+            let opened = ArchiveService.openArchive(linkArchive.path)
+            check("archive allows in-archive relative symlink", opened.ok, opened.error ?? "")
+        }
+        check("symlink target escaping root is rejected",
+              (try? ArchiveService.checkSymlinkTarget("../../etc/passwd", link: "pkg/link")) == nil
+              && (try? ArchiveService.checkSymlinkTarget("/etc/passwd", link: "link")) == nil
+              && (try? ArchiveService.checkSymlinkTarget("../lib/x", link: "pkg/bin/x")) != nil)
+
         check("extension hiding", displayName("report.txt", false) == "report"
               && displayName("archive.unknownext", false) == "archive.unknownext")
         check("type labels", FileKinds.typeLabel("a.png", false) == "Image"

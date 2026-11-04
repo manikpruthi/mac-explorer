@@ -147,13 +147,37 @@ enum ArchiveService {
             if fields[0].hasPrefix("l"), let arrow = name.range(of: " -> ") {
                 let target = String(name[arrow.upperBound...])
                 name = String(name[..<arrow.lowerBound])
-                try checkEntryPath(target)
+                try checkSymlinkTarget(target, link: name)
             } else if fields[0].hasPrefix("h"), let link = name.range(of: " link to ") {
                 let target = String(name[link.upperBound...])
                 name = String(name[..<link.lowerBound])
                 try checkEntryPath(target)
             }
             try checkEntryPath(name)
+        }
+    }
+
+    /// A symlink target is resolved from the link's own folder, so `bin/tsc -> ../lib/tsc.js`
+    /// is fine; only targets that are absolute or climb above the archive root are rejected.
+    /// (Hardlink targets are archive-root paths and go through `checkEntryPath`.)
+    static func checkSymlinkTarget(_ target: String, link: String) throws {
+        let normalized = target.replacingOccurrences(of: "\\", with: "/")
+        if normalized.hasPrefix("/") { throw ArchiveError.unsafePaths }
+        if normalized.count >= 2,
+           normalized[normalized.index(normalized.startIndex, offsetBy: 1)] == ":",
+           normalized.first?.isLetter == true {
+            throw ArchiveError.unsafePaths
+        }
+        var depth = 0
+        let linkDir = link.replacingOccurrences(of: "\\", with: "/").split(separator: "/").dropLast()
+        for component in linkDir + normalized.split(separator: "/") {
+            switch component {
+            case ".", "": continue
+            case "..":
+                depth -= 1
+                if depth < 0 { throw ArchiveError.unsafePaths }
+            default: depth += 1
+            }
         }
     }
 

@@ -182,6 +182,15 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
             outline.reloadData()
             if quickAccessOpen { outline.expandItem(quickSection) } else { outline.collapseItem(quickSection) }
             if thisPcOpen { outline.expandItem(pcSection) } else { outline.collapseItem(pcSection) }
+        } else {
+            // Same volumes, but free space moves: keep the tooltip text current without a reload.
+            let byPath = Dictionary(system.volumes.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+            for section in roots where section.isSection {
+                for node in section.children where node.kind == .volume {
+                    guard let path = node.path, let volume = byPath[path], volume.total > 0 else { continue }
+                    node.volumeText = "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))"
+                }
+            }
         }
 
         selectActive(system: system)
@@ -216,6 +225,7 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
                   let node = outline.item(atRow: row) as? SidebarNode else { continue }
             let active = node.isSection ? false : isActive(node)
             cell.setActive(active)
+            cell.toolTip = node.volumeText ?? node.path
         }
     }
 
@@ -313,7 +323,10 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         refreshVisibleCells()
-        guard let node = notification.userInfo?["NSObject"] as? SidebarNode, node.isSection else { return }
+        guard let node = notification.userInfo?["NSObject"] as? SidebarNode else { return }
+        // Nodes now outlive navigation, so re-read a folder's subfolders the next time it opens.
+        if node.kind == .folder || node.kind == .volume { node.loaded = false }
+        guard node.isSection else { return }
         delegate?.sidebarToggleSection(node.title, expanded: false)
     }
 

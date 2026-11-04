@@ -19,8 +19,8 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ## Features
 
-- **Tabbed browsing** with per-tab path, history, sort, view, and selection. `⌘T`, `⌘W`,
-  middle-click close, drag-out detach, tab context menu with “Move tab to new window”, `⌘N` windows.
+- **Tabbed browsing** with per-tab path, history, sort, view, selection, and finished search
+  results (a search still running when you switch away is dropped). `⌘T`, `⌘W`, middle-click close, drag-out detach, tab context menu with “Move tab to new window”, `⌘N` windows.
 - **Navigation bar** with back/forward/up/refresh, clickable breadcrumbs, collapsed long paths, and
   an address bar that switches to edit mode with a single click (`⌘L`, `~` expansion).
 - **Windows 11 command bar** — New, Cut, Copy, Paste, Rename, Delete, Undo Delete, Sort, View,
@@ -118,7 +118,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.5.1.dmg`](release/Mac-Explorer-1.5.1.dmg)**
+1. Download **[`release/Mac-Explorer-1.5.2.dmg`](release/Mac-Explorer-1.5.2.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -142,7 +142,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.5.1.dmg` and `release/Mac-Explorer-1.5.1.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.5.2.dmg` and `release/Mac-Explorer-1.5.2.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.
@@ -221,7 +221,9 @@ used.
 - `Sources/Services/DirectoryWatcher.swift` — FSEvents-based live refresh for the active folder,
   using directory-level events filtered off the main thread.
 - `Sources/Services/ArchiveService.swift` — `bsdtar`-via-`Process` extraction with traversal,
-  entry-count, and uncompressed-size checks from a single listing pass; temp cache with 7-day
+  entry-count, and uncompressed-size checks from a single listing pass (symlink targets are resolved
+  from the link's folder, so in-archive links like `bin/x -> ../lib/x` are allowed and only links
+  that are absolute or climb out of the archive are refused); temp cache with 7-day
   cleanup of archives not opened recently. Extract All writes straight to the destination.
 - `Sources/Services/NetworkService.swift` — `NetServiceBrowser` SMB discovery and in-process
   mounted volume inspection via `FileManager.mountedVolumeURLs`; Finder owns SMB auth and mounting.
@@ -271,7 +273,12 @@ mapped into every AppKit app.) Techniques used:
 - Quick Look thumbnails and workspace icons live in bounded `NSCache` instances (8 MB icons,
   16 MB thumbnails); large folders do not inflate memory.
 - The file list, details pane, Gallery, and Network views are created lazily and released when you
-  leave them. Inactive tab contents are released too.
+  leave them. Inactive tab listings are released too and reload when the tab is shown again, since
+  only the active folder is watched for changes.
+- Window chrome (archive banner, search header, content view) is only rebuilt when its structure
+  changes; otherwise the existing views update their text in place. The navigation pane keeps its
+  nodes (and your expanded subfolders) across navigation and re-reads a folder's subfolders each
+  time it is expanded.
 - Icon grid and tiles are `NSCollectionView`s that create items on demand; details/list use reusable
   `NSTableView` cells.
 - Search and Gallery scans have result caps (`250`/`160`), depth limits, and a 6-second deadline.
@@ -297,14 +304,14 @@ Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with t
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 63 filesystem, archive, sorting, volume, search-query, duplicate, permission, default-app,
+# 65 filesystem, archive (including symlink-target checks), sorting, volume, search-query, duplicate, permission, default-app,
 # and safety assertions
 "$APP" --self-test
 
-# 52 live-controller assertions: navigation, all five views, sorting, toggles,
-# create/rename/copy/cut/paste, Undo Delete, marquee selection, Open with (and its default-app
+# 56 live-controller assertions: navigation, all five views, sorting, toggles,
+# create/rename/copy/cut/paste (including same-folder cut as a no-op), Undo Delete, marquee selection, Open with (and its default-app
 # submenu), button titles fitting without truncation in every view and dialog, address editing,
-# search, dialogs, tabs, keyboard map, Quick Look (keyboard + menu), theme,
+# search (header shows the final count; switching tabs mid-search), dialogs, tabs, keyboard map, Quick Look (keyboard + menu), theme,
 # and menu-bar routing
 "$APP" --ui-test
 

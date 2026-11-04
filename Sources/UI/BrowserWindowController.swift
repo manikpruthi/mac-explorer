@@ -69,6 +69,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     private var bannerView: ThemedView?
     private var searchHeaderView: ThemedView?
+    private var bannerLabel: NSTextField?
+    private var searchHeaderLabel: NSTextField?
     private var contentHost: NSView?
 
     private var sidebarWidthConstraint: NSLayoutConstraint!
@@ -538,12 +540,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             || wantsArchive != (bannerView != nil)
             || wantsSearch != (searchHeaderView != nil)
 
-        guard structureChanged else { return }
+        guard structureChanged else {
+            // Same views stay up; refresh the text they show (search progress, archive name).
+            if wantsArchive, let archivePath = tab.location.archivePath {
+                bannerLabel?.stringValue = archiveBannerText(archivePath)
+            }
+            if wantsSearch { searchHeaderLabel?.stringValue = searchHeaderText() }
+            return
+        }
 
         bannerView?.removeFromSuperview()
         bannerView = nil
+        bannerLabel = nil
         searchHeaderView?.removeFromSuperview()
         searchHeaderView = nil
+        searchHeaderLabel = nil
         contentHost?.removeFromSuperview()
         contentHost = nil
 
@@ -588,10 +599,26 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         contentHost = content
     }
 
+    private func archiveBannerText(_ archivePath: String) -> String {
+        "Browsing \(PathTools.basename(archivePath)) — read-only extraction"
+    }
+
+    private func searchHeaderText() -> String {
+        let tab = activeTab
+        if tab.searchLoading {
+            let soFar = tab.searchEntries.isEmpty ? "" : " · \(FormatTools.plural(tab.searchEntries.count, "result")) so far"
+            return "Searching for \(tab.searchQuery) in \(tab.searchRoot)\(soFar)"
+        }
+        let truncated = tab.searchTruncated ? " · showing the 250 best matches" : ""
+        let source = tab.searchUsedIndex ? " · Spotlight index + folder scan" : ""
+        return "\(FormatTools.plural(tab.searchEntries.count, "result")) for \(tab.searchQuery) in \(tab.searchRoot)\(truncated)\(source)"
+    }
+
     private func makeArchiveBanner(archivePath: String) -> ThemedView {
         let banner = ThemedView()
         banner.fillColor = Theme.surface
-        let label = makeLabel("Browsing \(PathTools.basename(archivePath)) — read-only extraction", size: 12.5, color: Theme.textPrimary)
+        let label = makeLabel(archiveBannerText(archivePath), size: 12.5, color: Theme.textPrimary)
+        bannerLabel = label
         let button = HoverButton(title: "Extract all")
         button.font = NSFont.systemFont(ofSize: 12)
         button.contentTintColor = Theme.accent
@@ -625,17 +652,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func makeSearchHeader() -> ThemedView {
         let header = ThemedView()
         header.fillColor = Theme.surface
-        let tab = activeTab
-        let text: String
-        if tab.searchLoading {
-            let soFar = tab.searchEntries.isEmpty ? "" : " · \(FormatTools.plural(tab.searchEntries.count, "result")) so far"
-            text = "Searching for \(tab.searchQuery) in \(tab.searchRoot)\(soFar)"
-        } else {
-            let truncated = tab.searchTruncated ? " · showing the 250 best matches" : ""
-            let source = tab.searchUsedIndex ? " · Spotlight index + folder scan" : ""
-            text = "\(FormatTools.plural(tab.searchEntries.count, "result")) for \(tab.searchQuery) in \(tab.searchRoot)\(truncated)\(source)"
-        }
-        let label = makeLabel(text, size: 12.5, color: Theme.textSecondary)
+        let label = makeLabel(searchHeaderText(), size: 12.5, color: Theme.textSecondary)
+        searchHeaderLabel = label
         let clear = HoverButton(title: "Clear", image: "xmark")
         clear.font = NSFont.systemFont(ofSize: 12)
         clear.contentTintColor = Theme.textSecondary
@@ -1032,9 +1050,25 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
     }
 
+    /// Called before another tab becomes active.
+    private func leaveActiveTab() {
+        cancelSearchWork()
+        // The cancelled search can't finish, so drop it rather than leave the tab stuck on
+        // "Searching…"; a finished search is kept and shown again when the tab comes back.
+        let previousTab = activeTab
+        if previousTab.searchLoading {
+            previousTab.searchQuery = ""
+            previousTab.searchEntries = []
+            previousTab.searchLoading = false
+            previousTab.searchTruncated = false
+        }
+        // Only the active tab is watched, so a background listing may be stale: reload on return.
+        previousTab.entries = []
+    }
+
     private func createTab() {
         renamingPath = nil
-        cancelSearchWork()
+        leaveActiveTab()
         let tab = TabModel(location: .home, view: preferences.view)
         tabs.append(tab)
         activeIndex = tabs.count - 1
@@ -1049,7 +1083,8 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return
         }
         renamingPath = nil
-        cancelSearchWork()
+        // Closing a background tab must not cancel the active tab's search mid-flight.
+        if index == activeIndex { cancelSearchWork() }
         tabs.remove(at: index)
         if activeIndex >= tabs.count { activeIndex = tabs.count - 1 }
         else if index < activeIndex { activeIndex -= 1 }
@@ -1065,10 +1100,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func activateTab(index: Int) {
         guard index >= 0, index < tabs.count, index != activeIndex else { return }
         renamingPath = nil
-        cancelSearchWork()
+        leaveActiveTab()
         activeIndex = index
         persistSession()
-        if activeTab.entries.isEmpty, activeTab.location.readPath != nil {
+        if activeTab.entries.isEmpty, activeTab.location.readPath != nil, activeTab.isSearching {
+            // Keep the kept search on screen; the listing reloads once the search is cleared.
+            listingStaleWhileSearching = true
+            render()
+        } else if activeTab.entries.isEmpty, activeTab.location.readPath != nil {
             reloadActiveTab()
         } else if activeTab.location == .gallery, !galleryLoaded {
             enterGallery()
@@ -3039,6 +3078,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
            let targetFolder = visibleEntries().first(where: { $0.name == "Smoke Folder" }) {
             activeTab.selected = [copy.path]
             copySelection(cut: true)
+            // Cut + paste back into the same folder is a no-op (no "- Copy - Copy", source kept).
+            if let plan = PasteboardService.pastePlan() {
+                _ = FileService.paste(plan: plan, into: testRoot.path)
+            }
+            let noOp = FileService.exists(copy.path)
+                && !FileService.exists(testRoot.appendingPathComponent("Smoke Folder - Copy - Copy").path)
+            report(noOp, "cut + paste into same folder is a no-op")
             paste(into: targetFolder.path)
             let moved = await waitUntil {
                 !self.visibleEntries().contains { $0.name == "Smoke Folder - Copy" }
@@ -3069,6 +3115,19 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         handleSearchChange("smoke")
         let searched = await waitUntil { !self.activeTab.searchLoading && self.activeTab.searchQuery == "smoke" }
         report(searched && !self.activeTab.searchEntries.isEmpty, "search", "results=\(activeTab.searchEntries.count)")
+        let headerText = searchHeaderLabel?.stringValue ?? ""
+        report(!headerText.hasPrefix("Searching") && headerText.contains(" for smoke"),
+               "search header shows final result count", headerText)
+
+        let searchTabIndex = activeIndex
+        handleSearchChange("smoke folder")
+        createTab()
+        activateTab(index: searchTabIndex)
+        report(!activeTab.searchLoading, "tab switch mid-search doesn't leave search stuck")
+        closeTab(index: tabs.count - 1)
+        activateTab(index: searchTabIndex)
+        handleSearchChange("smoke")
+        _ = await waitUntil { !self.activeTab.searchLoading && self.activeTab.searchQuery == "smoke" }
         collectClipped("search")
         clearSearchPressed()
         report(activeTab.searchQuery.isEmpty, "clear search")
@@ -3116,6 +3175,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         report(tabs.count == tabsBefore + 1, "new tab")
         closeTab(index: activeIndex)
         report(tabs.count == tabsBefore, "close tab")
+        // A tab reloads its listing when it becomes active again (background tabs aren't watched).
+        let relisted = await waitUntil { !self.activeTab.loading && !self.activeTab.entries.isEmpty }
+        report(relisted, "returning tab reloads its listing")
 
         window?.makeFirstResponder(nil)
         if let window {
@@ -3146,6 +3208,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             report(tabs.count == countBeforeKeys + 1, "⌘T new tab (keyboard)")
             if let event = keyEvent("w", 13, [.command]) { _ = handleKeyDown(event) }
             report(tabs.count == countBeforeKeys, "⌘W close tab (keyboard)")
+            _ = await waitUntil { !self.activeTab.loading && !self.activeTab.entries.isEmpty }
             if let file = visibleEntries().first(where: { !$0.isDirectory }) {
                 activeTab.selected = [file.path]
                 activeTab.focusedPath = file.path
@@ -3199,6 +3262,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             let handled = NSApp.sendAction(action, to: nil, from: item)
             report(handled && tabs.count == before + 1, "menu bar New Tab routes to window")
             closeTab(index: activeIndex)
+            _ = await waitUntil { !self.activeTab.loading && !self.activeTab.entries.isEmpty }
         } else {
             report(false, "menu bar New Tab routes to window", "menu item missing")
         }
