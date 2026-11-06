@@ -40,12 +40,15 @@ views, Electron/Chromium components, or third-party dependencies.
 - **Drag and drop** — internal drops move onto folders, breadcrumb folders in the address bar, or the
   navigation pane (Option copies); Finder drops copy in.
 - **Five views** — Details, Large icons, Medium icons, List, and Tiles. Details has sortable,
-  user-resizable columns with Windows-style header/body alignment; the Name column flexes to fill
-  the pane while dragged widths survive refreshes. Large/medium icon captions are centred under
-  their icons.
+  user-resizable columns; every column, Size included, is left-aligned with its header. Columns can be dragged wider
+  or narrower freely; the Name column fills the pane while the columns fit, and once they are
+  wider than the pane the list scrolls horizontally. Dragged widths survive refreshes. Large/medium
+  icon captions are centred under their icons.
 - **Explorer selection model** — click, ⌘-toggle, Shift range, arrows, type-ahead, rubber-band
-  (marquee) drag selection with live row/icon highlighting and edge auto-scroll, checkbox hit
-  targets, and `⌘A`.
+  (marquee) drag selection with live row/icon highlighting and edge auto-scroll (the anchor stays
+  pinned to the content while it scrolls, and quick repeat drags or background refreshes no longer
+  drop the marquee), checkbox hit targets, and `⌘A`. Hover shading follows the pointer and clears
+  on scroll, reload, drag, or window switch.
 - **Live updates** — the active folder refreshes automatically when files are added, removed,
   renamed, or changed by other apps, and the navigation pane and Home update when volumes mount,
   unmount, or eject.
@@ -118,7 +121,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.5.2.dmg`](release/Mac-Explorer-1.5.2.dmg)**
+1. Download **[`release/Mac-Explorer-1.5.4.dmg`](release/Mac-Explorer-1.5.4.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -142,7 +145,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.5.2.dmg` and `release/Mac-Explorer-1.5.2.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.5.4.dmg` and `release/Mac-Explorer-1.5.4.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.

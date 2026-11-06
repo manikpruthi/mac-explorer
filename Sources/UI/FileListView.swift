@@ -72,7 +72,10 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
     private var lastFocused: String?
     private var gridIconSize: CGFloat = 80
+    /// Marquee anchor in the host (document view) coordinate space, so it stays pinned
+    /// to the content it was pressed on while the list auto-scrolls.
     private var marqueeStart: NSPoint?
+    private var lastMarqueeScrollOrigin = NSPoint.zero
     private var marqueeCurrent = NSPoint.zero
     private var marqueeRect = NSRect.zero
     private var marqueeBase: Set<String> = []
@@ -107,7 +110,12 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         tableView.allowsEmptySelection = true
         tableView.allowsColumnReordering = false
         tableView.allowsColumnResizing = true
-        tableView.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
+        // No AppKit autoresizing: with an autoresizing style the table must always fit the
+        // pane, so widening one column has to steal width from another and stops once
+        // Name hits its minimum. sizeTableColumnsIfNeeded() fills the pane by hand
+        // instead, and widths beyond the pane scroll horizontally like Explorer.
+        tableView.columnAutoresizingStyle = .noColumnAutoresizing
+        tableScroll.hasHorizontalScroller = true
         tableView.style = .plain
         tableView.target = self
         tableView.doubleAction = #selector(tableDoubleClicked)
@@ -117,13 +125,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         tableView.onContext = { [weak self] row, event in
             self?.handleTableContext(row: row, event: event)
         }
-        tableView.onRowHover = { [weak self] row in
-            guard let self, self.hoveredRow != row else { return }
-            let previous = self.hoveredRow
-            self.hoveredRow = row
-            if previous >= 0 { self.updateRowHover(row: previous, isHovered: false) }
-            if row >= 0 { self.updateRowHover(row: row, isHovered: true) }
-        }
+        tableView.onHoverChange = { [weak self] in self?.refreshHover() }
         tableView.onMarquee = { [weak self] phase, event in
             self?.handleMarquee(phase, event: event) ?? false
         }
@@ -149,6 +151,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         collectionView.onMarquee = { [weak self] phase, event in
             self?.handleMarquee(phase, event: event) ?? false
         }
+        collectionView.onHoverChange = { [weak self] in self?.refreshHover() }
         let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleCollectionDoubleClick(_:)))
         doubleClick.numberOfClicksRequired = 2
         collectionView.addGestureRecognizer(doubleClick)
@@ -158,6 +161,16 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
         addSubview(stateContainer)
         configureColumns()
+
+        // Scrolling moves rows under a stationary pointer without any mouseMoved event,
+        // so re-derive the hovered row whenever either clip view scrolls.
+        for clip in [tableScroll.contentView, collectionScroll.contentView] {
+            clip.postsBoundsChangedNotifications = true
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(clipViewScrolled(_:)),
+                name: NSView.boundsDidChangeNotification, object: clip
+            )
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -178,7 +191,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
                 ("name", "Name", 560, 240, .left, 20, 8),
                 ("modified", "Date modified", 200, 140, .left, 8, 8),
                 ("type", "Type", 180, 120, .left, 8, 8),
-                ("size", "Size", 100, 80, .right, 8, 10),
+                ("size", "Size", 100, 80, .left, 8, 10),
             ]
             for (index, spec) in specs.enumerated() {
                 let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(spec.id))
@@ -255,8 +268,18 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         isSearch: Bool
     ) {
         layer?.backgroundColor = Theme.resolved(Theme.content, for: effectiveAppearance).cgColor
-        cancelMarquee()
         let modeChanged = mode != self.mode
+        // Status bar, details pane, or watcher refreshes can re-render mid-drag. Only a
+        // change to what is listed invalidates the marquee; otherwise keep it running and
+        // keep its live selection instead of the (throttled) copy echoed back.
+        var selected = selected
+        if marqueeStart != nil {
+            if modeChanged || entries != self.entries {
+                cancelMarquee()
+            } else {
+                selected = self.selected
+            }
+        }
         // A selection/focus-only change refreshes just the affected cells instead of
         // reloading the whole table or grid.
         let needsReload = needsFullReload
@@ -333,6 +356,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         syncRenameEditor(renamingPath)
         syncHeader(sortKey: sortKey, sortDir: sortDir)
         needsLayout = true
+        refreshHover()
     }
 
     private func updateGridLayout() {
@@ -418,13 +442,6 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         needsFullReload = true
     }
 
-    override func viewWillMove(toWindow newWindow: NSWindow?) {
-        super.viewWillMove(toWindow: newWindow)
-        if newWindow == nil {
-            cancelMarquee()
-        }
-    }
-
     override func layout() {
         super.layout()
         stateContainer.frame = bounds
@@ -439,14 +456,17 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         let contentWidth = tableScroll.contentSize.width
         guard contentWidth > 0 else { return }
         guard abs(contentWidth - lastTableContentWidth) > 0.5 else { return }
+        let previousWidth = lastTableContentWidth
         lastTableContentWidth = contentWidth
-        if abs(tableView.frame.width - contentWidth) > 0.5 {
-            tableView.setFrameSize(NSSize(width: contentWidth, height: tableView.frame.height))
-        }
-        // AppKit's automatic column sizing only runs when explicitly asked. This fills
-        // the flexible Name column while preserving the widths of the other columns;
-        // user-dragged widths survive until the pane itself is resized.
-        tableView.sizeToFit()
+        guard let nameColumn = tableView.tableColumns.first else { return }
+        let others = tableView.tableColumns.dropFirst().reduce(CGFloat(0)) { $0 + $1.width }
+        let total = nameColumn.width + others
+        // Stretch Name to fill the pane on first layout, while the columns still fit the
+        // old width, or when the pane grew past them. Columns the user widened beyond
+        // the pane keep their widths and scroll horizontally.
+        let fitted = previousWidth == 0 || total <= previousWidth + 1 || total < contentWidth
+        guard fitted else { return }
+        nameColumn.width = max(nameColumn.minWidth, contentWidth - others)
     }
 
     // MARK: - Table data source
@@ -486,7 +506,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
             default: text = ""
             }
             cell.trailingPadding = identifier == "size" ? 10 : 8
-            cell.configure(text: text, alignment: identifier == "size" ? .right : .left)
+            cell.configure(text: text, alignment: .left)
             return cell
         }
 
@@ -547,14 +567,79 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         delegate?.fileListOpen(entries[row])
     }
 
-    private func updateRowHover(row: Int, isHovered: Bool) {
-        guard row >= 0, row < entries.count else { return }
-        if let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? FileRowView {
-            rowView.hovered = isHovered
+    // MARK: - Hover
+
+    /// The single source of hover state for rows and grid items. Hover is derived from
+    /// the live pointer position rather than per-cell enter/exit events, which go
+    /// missing when rows scroll, cells are reloaded or recycled, a drag is in
+    /// progress, or the window loses key status, and used to leave rows shaded.
+    func refreshHover() {
+        hoveredRow = hoverIndexUnderPointer()
+        applyHoverToVisibleItems()
+    }
+
+    private func hoverIndexUnderPointer() -> Int {
+        guard let window, window.isKeyWindow, marqueeStart == nil,
+              NSEvent.pressedMouseButtons & 1 == 0 else { return -1 }
+        let location = window.mouseLocationOutsideOfEventStream
+        if mode.isGrid || mode == .tiles {
+            guard !collectionScroll.isHidden else { return -1 }
+            let point = collectionView.convert(location, from: nil)
+            guard collectionView.visibleRect.contains(point) else { return -1 }
+            let index = collectionView.indexPathForItem(at: point)?.item ?? -1
+            return index < entries.count ? index : -1
         }
-        if let cell = tableView.view(atColumn: 0, row: row, makeIfNecessary: false) as? NameCellView {
-            cell.setHovered(isHovered)
+        guard !tableScroll.isHidden else { return -1 }
+        let point = tableView.convert(location, from: nil)
+        // visibleRect excludes the header, so hovering a column title clears row hover.
+        guard tableView.visibleRect.contains(point) else { return -1 }
+        let row = tableView.row(at: point)
+        return row < entries.count ? row : -1
+    }
+
+    private func applyHoverToVisibleItems() {
+        let hovered = hoveredRow
+        if mode.isGrid || mode == .tiles {
+            for item in collectionView.visibleItems() {
+                let isHovered = collectionView.indexPath(for: item)?.item == hovered
+                (item as? FileIconItemView)?.setHovered(isHovered)
+                (item as? FileTileItemView)?.setHovered(isHovered)
+            }
+        } else {
+            // Every instantiated row view, not just the previously hovered one, so a
+            // stale highlight can never survive.
+            tableView.enumerateAvailableRowViews { rowView, row in
+                (rowView as? FileRowView)?.hovered = row == hovered
+                (rowView.view(atColumn: 0) as? NameCellView)?.setHovered(row == hovered)
+            }
         }
+    }
+
+    @objc private func clipViewScrolled(_ notification: Notification) {
+        refreshHover()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if let window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: window)
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: window)
+        }
+        if newWindow == nil {
+            cancelMarquee()
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard let window else { return }
+        for name in [NSWindow.didResignKeyNotification, NSWindow.didBecomeKeyNotification] {
+            NotificationCenter.default.addObserver(self, selector: #selector(windowKeyChanged(_:)), name: name, object: window)
+        }
+    }
+
+    @objc private func windowKeyChanged(_ notification: Notification) {
+        refreshHover()
     }
 
     private func handleTableContext(row: Int, event: NSEvent) {
@@ -597,6 +682,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
             item.onToggle = { [weak self] in
                 self?.delegate?.fileListToggleSelection(entry.path)
             }
+            item.setHovered(indexPath.item == hoveredRow)
             return item
         }
         let item = FileIconItemView()
@@ -612,6 +698,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         item.onToggle = { [weak self] in
             self?.delegate?.fileListToggleSelection(entry.path)
         }
+        item.setHovered(indexPath.item == hoveredRow)
         return item
     }
 
@@ -718,7 +805,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         let anchor = host.convert(point, from: self)
         guard marqueeItemIndex(at: anchor) == nil else { return false }
         marqueeBase = extend ? selected : []
-        marqueeStart = point
+        marqueeStart = anchor
+        lastMarqueeScrollOrigin = marqueeScrollView().contentView.bounds.origin
         marqueeCurrent = point
         marqueeRect = .zero
         if !extend {
@@ -745,6 +833,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         stopMarqueeTimer()
         marqueeView.removeFromSuperview()
         marqueeView.isHidden = true
+        defer { refreshHover() }
         let moved = marqueeRect.width > 3 || marqueeRect.height > 3
         if moved {
             let focused = focusedPath.flatMap { selected.contains($0) ? $0 : nil }
@@ -769,11 +858,11 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         stopMarqueeTimer()
         marqueeView.removeFromSuperview()
         marqueeView.isHidden = true
+        refreshHover()
     }
 
     private func applyMarquee() {
-        guard let start = marqueeStart, let host = marqueeHost() else { return }
-        let anchor = host.convert(start, from: self)
+        guard let anchor = marqueeStart, let host = marqueeHost() else { return }
         let tip = host.convert(marqueeCurrent, from: self)
         let rect = NSRect(
             x: min(anchor.x, tip.x),
@@ -785,9 +874,20 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         marqueeView.frame = rect
         let hitRect = NSRect(x: rect.minX, y: rect.minY, width: max(rect.width, 1), height: max(rect.height, 1))
         var next = marqueeBase
-        for (index, entry) in entries.enumerated() {
-            guard let frame = marqueeItemFrame(at: index), frame.intersects(hitRect) else { continue }
-            next.insert(entry.path)
+        if mode.isGrid || mode == .tiles {
+            for (index, entry) in entries.enumerated() {
+                guard let frame = marqueeItemFrame(at: index), frame.intersects(hitRect) else { continue }
+                next.insert(entry.path)
+            }
+        } else {
+            // Rows span the full width, so only the vertical extent matters; this also
+            // catches a marquee that starts beside the columns once they are narrower
+            // than the pane.
+            let rowHit = NSRect(x: tableView.bounds.minX, y: hitRect.minY, width: max(tableView.bounds.width, 1), height: hitRect.height)
+            let rows = tableView.rows(in: rowHit)
+            for index in rows.location..<(rows.location + rows.length) where index >= 0 && index < entries.count {
+                next.insert(entries[index].path)
+            }
         }
         guard next != selected else { return }
         selected = next
@@ -848,7 +948,9 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     @objc private func marqueeTimerFired() {
         guard marqueeStart != nil else { return }
-        if !NSApp.isActive {
+        // A mouse-up delivered elsewhere (another window, a sheet, app switch) would
+        // otherwise leave the marquee armed and swallow the next click.
+        if !NSApp.isActive || NSEvent.pressedMouseButtons & 1 == 0 {
             endMarquee()
             return
         }
@@ -864,21 +966,26 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         } else if hostPoint.y > visible.maxY - edge {
             delta = 16
         }
-        guard delta != 0 else { return }
         let clip = scroll.contentView
-        var origin = clip.bounds.origin
-        origin.y += delta
-        let maxOrigin = max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height)
-        origin.y = min(max(0, origin.y), maxOrigin)
-        clip.scroll(to: origin)
-        scroll.reflectScrolledClipView(clip)
+        if delta != 0 {
+            var origin = clip.bounds.origin
+            origin.y += delta
+            let maxOrigin = max(0, (scroll.documentView?.frame.height ?? 0) - clip.bounds.height)
+            origin.y = min(max(0, origin.y), maxOrigin)
+            clip.scroll(to: origin)
+            scroll.reflectScrolledClipView(clip)
+        }
+        // Also catches trackpad/wheel scrolling mid-drag, which sends no mouseDragged.
+        guard clip.bounds.origin != lastMarqueeScrollOrigin else { return }
+        lastMarqueeScrollOrigin = clip.bounds.origin
         updateMarquee(to: point)
     }
 
     private func handleMarquee(_ phase: MarqueePhase, event: NSEvent) -> Bool {
         switch phase {
         case .begin:
-            guard event.clickCount == 1 else { return false }
+            // No clickCount guard: pressing again soon after a click arrives with
+            // clickCount 2, which used to silently drop the drag.
             return beginMarquee(
                 at: convert(event.locationInWindow, from: nil),
                 extend: event.modifierFlags.contains(.command)
@@ -1256,7 +1363,7 @@ final class MarqueeScrollView: NSScrollView {
 @MainActor
 final class FileTableView: NSTableView {
     var onContext: ((Int, NSEvent) -> Void)?
-    var onRowHover: ((Int) -> Void)?
+    var onHoverChange: (() -> Void)?
     var onMarquee: ((MarqueePhase, NSEvent) -> Bool)?
     private var tracking: NSTrackingArea?
 
@@ -1291,13 +1398,17 @@ final class FileTableView: NSTableView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        let row = self.row(at: convert(event.locationInWindow, from: nil))
-        onRowHover?(row)
+        onHoverChange?()
         super.mouseMoved(with: event)
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChange?()
+        super.mouseEntered(with: event)
+    }
+
     override func mouseExited(with event: NSEvent) {
-        onRowHover?(-1)
+        onHoverChange?()
         super.mouseExited(with: event)
     }
 
@@ -1319,6 +1430,36 @@ final class FileTableView: NSTableView {
 final class IconCollectionView: NSCollectionView {
     var onContext: ((IndexPath?, NSEvent) -> Void)?
     var onMarquee: ((MarqueePhase, NSEvent) -> Bool)?
+    var onHoverChange: (() -> Void)?
+    private var tracking: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: visibleRect,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onHoverChange?()
+        super.mouseMoved(with: event)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChange?()
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChange?()
+        super.mouseExited(with: event)
+    }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -1392,7 +1533,6 @@ final class NameCellView: NSView {
     private let style: Style
     var onToggle: (() -> Void)?
     private var hovering = false
-    private var tracking: NSTrackingArea?
     private var selected = false
 
     init(style: Style) {
@@ -1453,28 +1593,6 @@ final class NameCellView: NSView {
         checkbox.isHidden = !(selected || hovering)
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
-        checkbox.isHidden = false
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        checkbox.isHidden = !selected
-    }
 
     override func layout() {
         super.layout()
@@ -1502,8 +1620,6 @@ final class FileIconItemView: NSCollectionViewItem {
 
     private let tile = IconTileView()
     var onToggle: (() -> Void)?
-    var onHoverChange: ((Bool) -> Void)?
-
     override func loadView() {
         view = tile
         tile.onToggle = { [weak self] in self?.onToggle?() }
@@ -1511,6 +1627,10 @@ final class FileIconItemView: NSCollectionViewItem {
 
     override var isSelected: Bool {
         didSet { tile.isSelected = isSelected }
+    }
+
+    func setHovered(_ hovered: Bool) {
+        tile.setHovered(hovered)
     }
 
     func configure(
@@ -1540,7 +1660,6 @@ final class IconTileView: NSView {
     private var entry: FileEntry?
     private var iconSize: CGFloat = 80
     private var hovering = false
-    private var tracking: NSTrackingArea?
     var onToggle: (() -> Void)?
     var isSelected = false {
         didSet {
@@ -1599,28 +1718,11 @@ final class IconTileView: NSView {
         needsDisplay = true
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
+    /// Driven by FileListView.refreshHover(); tiles have no tracking areas of their own.
+    func setHovered(_ hovered: Bool) {
+        guard hovering != hovered else { return }
+        hovering = hovered
         checkbox.isHidden = !(isSelected || hovering)
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        checkbox.isHidden = !isSelected
         needsDisplay = true
     }
 
@@ -1669,6 +1771,10 @@ final class FileTileItemView: NSCollectionViewItem {
         didSet { tile.isSelected = isSelected }
     }
 
+    func setHovered(_ hovered: Bool) {
+        tile.setHovered(hovered)
+    }
+
     func configure(entry: FileEntry, selected: Bool, focused: Bool, cut: Bool, showExtensions: Bool) {
         tile.configure(entry: entry, selected: selected, focused: focused, cut: cut, showExtensions: showExtensions)
     }
@@ -1681,7 +1787,6 @@ final class TileGridItemView: NSView {
     private let nameLabel = makeLabel("", size: 13)
     private let metaLabel = makeLabel("", size: 11.5, color: Theme.textSecondary)
     private var hovering = false
-    private var tracking: NSTrackingArea?
     private var focused = false
     var onToggle: (() -> Void)?
     var isSelected = false {
@@ -1731,28 +1836,11 @@ final class TileGridItemView: NSView {
         needsDisplay = true
     }
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        hovering = true
+    /// Driven by FileListView.refreshHover(); tiles have no tracking areas of their own.
+    func setHovered(_ hovered: Bool) {
+        guard hovering != hovered else { return }
+        hovering = hovered
         checkbox.isHidden = !(isSelected || hovering)
-        needsDisplay = true
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        hovering = false
-        checkbox.isHidden = !isSelected
         needsDisplay = true
     }
 
