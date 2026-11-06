@@ -19,3 +19,7 @@ xcuserdata/
 
 # Local scratch
 *.log
+
+# /brag launch-video output
+brag-output/
+brag-output-*/
