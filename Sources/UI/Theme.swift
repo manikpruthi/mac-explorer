@@ -29,6 +29,17 @@ enum Theme {
     static let selection = dynamicAlpha(light: (0, 103, 192, 0.14), dark: (0, 120, 212, 0.34))
     static let selectionStrong = dynamicAlpha(light: (0, 103, 192, 0.22), dark: (0, 120, 212, 0.42))
     static let selectionBorder = dynamicAlpha(light: (0, 103, 192, 0.45), dark: (76, 166, 255, 0.55))
+    /// Folder under the pointer during a drag: stronger than selection, with an accent ring.
+    static let dropTarget = dynamicAlpha(light: (0, 103, 192, 0.24), dark: (0, 120, 212, 0.5))
+
+    static func drawDropTarget(in rect: NSRect, radius: CGFloat) {
+        dropTarget.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius).fill()
+        accent.setStroke()
+        let ring = NSBezierPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), xRadius: radius, yRadius: radius)
+        ring.lineWidth = 1.5
+        ring.stroke()
+    }
 
     static let font = NSFont.systemFont(ofSize: 13)
     static let smallFont = NSFont.systemFont(ofSize: 12)
@@ -89,7 +100,7 @@ class ThemedView: NSView {
     var cornerRadius: CGFloat = 0 { didSet { needsDisplay = true } }
     var borderWidth: CGFloat = 0 { didSet { needsDisplay = true } }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
@@ -178,7 +189,7 @@ class HoverView: ThemedView {
 }
 
 final class FlippedView: NSView {
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 }
 
 final class DraggableTitleView: NSView {

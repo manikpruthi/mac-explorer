@@ -689,7 +689,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         guard let list = explicitList ?? fileListView else { return }
         let tab = activeTab
         let visible = visibleEntries()
-        if let renamingPath, !visible.contains(where: { $0.path == renamingPath }) {
+        // While a reload is in flight (e.g. right after "New folder"), the new item
+        // isn't listed yet; keep the pending rename instead of dropping it.
+        if let renamingPath, !tab.loading, !visible.contains(where: { $0.path == renamingPath }) {
             self.renamingPath = nil
         }
         list.update(
@@ -3449,8 +3451,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 final class BrowserWindow: NSWindow {
     var keyHandler: ((NSEvent) -> Bool)?
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    // nonisolated: AppKit queries these off the main thread while it lays out
+    // multi-item drag images concurrently; a main-actor getter traps there.
+    nonisolated override var canBecomeKey: Bool { true }
+    nonisolated override var canBecomeMain: Bool { true }
 
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown, let keyHandler, keyHandler(event) {

@@ -63,6 +63,7 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var pinnedPaths: Set<String> = []
     private var lastPinned: [String] = []
     private var lastVolumePaths: [String] = []
+    private var dropTargetNode: SidebarNode?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -80,6 +81,9 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         outline.floatsGroupRows = false
         outline.registerForDraggedTypes([FileListView.dragType, .fileURL])
+        // Drop feedback is drawn by SidebarCellView so it matches the rest of the app.
+        outline.draggingDestinationFeedbackStyle = .none
+        outline.onDragLeft = { [weak self] in self?.setDropTarget(nil) }
         outline.setDraggingSourceOperationMask([.copy, .move], forLocal: true)
         outline.setDraggingSourceOperationMask([.copy], forLocal: false)
         outline.onContext = { [weak self] node, event in
@@ -291,6 +295,7 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         }
         let active = node.isSection ? false : isActive(node)
         cell.configure(node: node, active: active, pinned: node.path.map { pinnedPaths.contains($0) } ?? false)
+        cell.isDropTarget = dropTargetNode === node
         return cell
     }
 
@@ -375,9 +380,14 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         proposedItem item: Any?,
         proposedChildIndex index: Int
     ) -> NSDragOperation {
-        guard let node = item as? SidebarNode, let path = node.path, node.kind != .trash else { return [] }
-        guard node.kind == .folder || node.kind == .volume else { return [] }
+        guard let node = item as? SidebarNode, let path = node.path, node.kind != .trash,
+              node.kind == .folder || node.kind == .volume,
+              !FileListView.draggedPaths(info).contains(path) else {
+            setDropTarget(nil)
+            return []
+        }
         outlineView.setDropItem(node, dropChildIndex: NSOutlineViewDropOnItemIndex)
+        setDropTarget(node)
         let types = info.draggingPasteboard.types ?? []
         let internalDrag = types.contains(FileListView.dragType)
         _ = path
@@ -393,12 +403,22 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         item: Any?,
         childIndex index: Int
     ) -> Bool {
+        setDropTarget(nil)
         guard let node = item as? SidebarNode, let destination = node.path else { return false }
         guard let paths = draggedPaths(info) else { return false }
         let internalDrag = info.draggingPasteboard.types?.contains(FileListView.dragType) ?? false
         let copy = internalDrag ? NSEvent.modifierFlags.contains(.option) : true
         delegate?.sidebarDrop(paths: paths, destination: destination, copy: copy)
         return true
+    }
+
+    private func setDropTarget(_ node: SidebarNode?) {
+        guard dropTargetNode !== node else { return }
+        dropTargetNode = node
+        for row in 0..<outline.numberOfRows {
+            guard let cell = outline.view(atColumn: 0, row: row, makeIfNecessary: false) as? SidebarCellView else { continue }
+            cell.isDropTarget = node != nil && outline.item(atRow: row) as? SidebarNode === node
+        }
     }
 
     private func draggedPaths(_ info: NSDraggingInfo) -> [String]? {
@@ -418,6 +438,17 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
 @MainActor
 final class SidebarOutlineView: NSOutlineView {
     var onContext: ((SidebarNode?, NSEvent) -> Void)?
+    var onDragLeft: (() -> Void)?
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        super.draggingExited(sender)
+        onDragLeft?()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        super.draggingEnded(sender)
+        onDragLeft?()
+    }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
@@ -437,8 +468,11 @@ final class SidebarCellView: NSView {
     private var isSection = false
     private var hovering = false
     private var tracking: NSTrackingArea?
+    var isDropTarget = false {
+        didSet { if oldValue != isDropTarget { needsDisplay = true } }
+    }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -524,7 +558,9 @@ final class SidebarCellView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if active {
+        if isDropTarget {
+            Theme.drawDropTarget(in: bounds.insetBy(dx: 4, dy: 1), radius: 4)
+        } else if active {
             Theme.selection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 4, yRadius: 4).fill()
             Theme.accent.setFill()

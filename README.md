@@ -38,7 +38,11 @@ views, Electron/Chromium components, or third-party dependencies.
 - **Archive browsing** — ZIP/TAR/GZ/BZ2/XZ and other `bsdtar` formats open in a read-only extracted
   view with breadcrumbs, Up/Back, copy-out, file opening, and Extract All.
 - **Drag and drop** — internal drops move onto folders, breadcrumb folders in the address bar, or the
-  navigation pane (Option copies); Finder drops copy in.
+  navigation pane (Option copies); Finder drops copy in. While dragging, the selection shrinks to a
+  small icon pile with an item-count badge under the pointer, so the list stays visible, and the
+  folder, sidebar entry or breadcrumb under the pointer gets an accent highlight. A folder that is
+  part of the drag is never offered as its own target. Dragging any number of selected items
+  (including a `⌘A` selection with some items ⌘-clicked off) is safe.
 - **Five views** — Details, Large icons, Medium icons, List, and Tiles. Details has sortable,
   user-resizable columns; every column, Size included, is left-aligned with its header. Columns can be dragged wider
   or narrower freely; the Name column fills the pane while the columns fit, and once they are
@@ -121,7 +125,7 @@ views, Electron/Chromium components, or third-party dependencies.
 
 ### Easy mode — use the prebuilt DMG (no Xcode needed)
 
-1. Download **[`release/Mac-Explorer-1.5.4.dmg`](release/Mac-Explorer-1.5.4.dmg)**
+1. Download **[`release/Mac-Explorer-1.6.0.dmg`](release/Mac-Explorer-1.6.0.dmg)**
    (universal: Apple Silicon and Intel).
 2. Double-click the DMG to mount it.
 3. Drag **Mac Explorer.app** onto the **Applications** shortcut in the window.
@@ -145,7 +149,7 @@ open "$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app"
 
 CLI builds go to `~/Library/Caches/MacExplorerBuild` so Spotlight and the macOS Apps view don't
 list a second copy alongside the installed app. Set `MAC_EXPLORER_BUILD_DIR` to override it.
-`package.sh` writes `release/Mac-Explorer-1.5.4.dmg` and `release/Mac-Explorer-1.5.4.zip`; both
+`package.sh` writes `release/Mac-Explorer-1.6.0.dmg` and `release/Mac-Explorer-1.6.0.zip`; both
 are committed to the repo so the DMG route above works without building anything. The app is
 unsigned. On first launch, right-click **Mac Explorer.app → Open**, or allow it under
 **System Settings → Privacy & Security → Open Anyway**.
@@ -175,7 +179,7 @@ declared in `Resources/Info.plist`.
 | `⌘F` / `⌘L` | Focus search / edit address |
 | `⌘C` / `⌘X` / `⌘V` | Copy / cut / paste files (or text in fields) |
 | `⌘A` | Select all |
-| `⌘⇧N` | New folder |
+| `⌘⇧N` | New folder (opens straight into rename) |
 | `F2` | Rename |
 | `⌘⌫` or `Delete` | Move to Trash |
 | `⌘Z` | Undo Delete (restore the last Trash operation) |

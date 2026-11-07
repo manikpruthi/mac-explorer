@@ -463,7 +463,7 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
 final class ClickView: NSView {
     var onClick: (() -> Void)?
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func mouseDown(with event: NSEvent) {
         onClick?()

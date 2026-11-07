@@ -84,7 +84,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private let marqueeView = ThemedView()
     private var lastTableContentWidth: CGFloat = 0
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1056,7 +1056,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func tableView(_ tableView: NSTableView, validateDrop info: NSDraggingInfo, proposedRow row: Int, proposedDropOperation dropOperation: NSTableView.DropOperation) -> NSDragOperation {
         guard acceptsDrag(info) else { return [] }
-        if row >= 0 && row < entries.count, entries[row].isDirectory {
+        if row >= 0 && row < entries.count, entries[row].isDirectory,
+           !Self.draggedPaths(info).contains(entries[row].path) {
             tableView.setDropRow(row, dropOperation: .on)
         } else {
             tableView.setDropRow(-1, dropOperation: .on)
@@ -1066,7 +1067,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func tableView(_ tableView: NSTableView, acceptDrop info: NSDraggingInfo, row: Int, dropOperation: NSTableView.DropOperation) -> Bool {
         let destination: String?
-        if row >= 0 && row < entries.count, entries[row].isDirectory {
+        if row >= 0 && row < entries.count, entries[row].isDirectory,
+           !Self.draggedPaths(info).contains(entries[row].path) {
             destination = entries[row].path
         } else {
             destination = nil
@@ -1094,7 +1096,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     ) -> NSDragOperation {
         guard acceptsDrag(draggingInfo) else { return [] }
         let item = proposedDropIndexPath.pointee.item
-        if item >= 0 && item < entries.count && entries[item].isDirectory {
+        if item >= 0 && item < entries.count && entries[item].isDirectory
+            && !Self.draggedPaths(draggingInfo).contains(entries[item].path) {
             proposedDropOperation.pointee = .on
         } else {
             proposedDropOperation.pointee = .before
@@ -1110,12 +1113,67 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         dropOperation: NSCollectionView.DropOperation
     ) -> Bool {
         let destination: String?
-        if indexPath.item >= 0 && indexPath.item < entries.count && entries[indexPath.item].isDirectory {
+        if indexPath.item >= 0 && indexPath.item < entries.count && entries[indexPath.item].isDirectory
+            && !Self.draggedPaths(draggingInfo).contains(entries[indexPath.item].path) {
             destination = entries[indexPath.item].path
         } else {
             destination = nil
         }
         return performDrop(draggingInfo, destination: destination)
+    }
+
+    func tableView(
+        _ tableView: NSTableView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forRowIndexes rowIndexes: IndexSet
+    ) {
+        compactDragImages(session, source: tableView, screenPoint: screenPoint)
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        draggingSession session: NSDraggingSession,
+        willBeginAt screenPoint: NSPoint,
+        forItemsAt indexPaths: Set<IndexPath>
+    ) {
+        compactDragImages(session, source: collectionView, screenPoint: screenPoint)
+    }
+
+    /// AppKit's default drag image is a snapshot of every dragged row at full width,
+    /// which buries the drop targets. Replace it with a small pile of icons under the
+    /// pointer (AppKit adds the item-count badge); only the top few icons are drawn.
+    private func compactDragImages(_ session: NSDraggingSession, source: NSView, screenPoint: NSPoint) {
+        guard let window = source.window else { return }
+        session.draggingFormation = .pile
+        let cursor = source.convert(window.convertPoint(fromScreen: screenPoint), from: nil)
+        let side: CGFloat = 40
+        let frame = NSRect(x: cursor.x - side / 2, y: cursor.y - side / 2, width: side, height: side)
+        let byPath = Dictionary(entries.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+        session.enumerateDraggingItems(
+            options: [],
+            for: source,
+            classes: [NSPasteboardItem.self],
+            searchOptions: [:]
+        ) { draggingItem, index, _ in
+            guard index < 4 else {
+                draggingItem.imageComponentsProvider = { @Sendable in [] }
+                return
+            }
+            let item = draggingItem.item as? NSPasteboardItem
+            let path = item?.string(forType: .fileURL).flatMap { URL(string: $0)?.path }
+            let image = path.flatMap { byPath[$0] }.map { IconService.shared.fileIcon(for: $0, size: side) }
+                ?? NSWorkspace.shared.icon(for: .item)
+            draggingItem.setDraggingFrame(frame, contents: image)
+        }
+    }
+
+    /// Paths carried by an internal drag (empty for drags from other apps).
+    static func draggedPaths(_ info: NSDraggingInfo) -> Set<String> {
+        guard let json = info.draggingPasteboard.string(forType: dragType),
+              let data = json.data(using: .utf8),
+              let paths = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+        return Set(paths)
     }
 
     private func acceptsDrag(_ info: NSDraggingInfo) -> Bool {
@@ -1494,13 +1552,24 @@ final class FileRowView: NSTableRowView {
         didSet { if oldValue != marqueeSelected { needsDisplay = true } }
     }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     private var showsSelection: Bool { isSelected || marqueeSelected }
+
+    override var isTargetForDropOperation: Bool {
+        didSet { if oldValue != isTargetForDropOperation { needsDisplay = true } }
+    }
+
+    // Drawn in drawBackground instead, so the target reads clearly over selection.
+    override func drawDraggingDestinationFeedback(in dirtyRect: NSRect) {}
 
     override func drawBackground(in dirtyRect: NSRect) {
         Theme.content.setFill()
         dirtyRect.fill()
+        if isTargetForDropOperation {
+            Theme.drawDropTarget(in: bounds.insetBy(dx: 4, dy: 1), radius: 3)
+            return
+        }
         if showsSelection {
             Theme.selection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 1), xRadius: 3, yRadius: 3).fill()
@@ -1560,7 +1629,7 @@ final class NameCellView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     func configure(
         entry: FileEntry,
@@ -1629,6 +1698,10 @@ final class FileIconItemView: NSCollectionViewItem {
         didSet { tile.isSelected = isSelected }
     }
 
+    override var highlightState: NSCollectionViewItem.HighlightState {
+        didSet { tile.isDropTarget = highlightState == .asDropTarget }
+    }
+
     func setHovered(_ hovered: Bool) {
         tile.setHovered(hovered)
     }
@@ -1669,8 +1742,11 @@ final class IconTileView: NSView {
         }
     }
     private var focused = false
+    var isDropTarget = false {
+        didSet { if oldValue != isDropTarget { needsDisplay = true } }
+    }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1735,6 +1811,10 @@ final class IconTileView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if isDropTarget {
+            Theme.drawDropTarget(in: bounds.insetBy(dx: 1, dy: 1), radius: 4)
+            return
+        }
         if isSelected {
             Theme.selection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4).fill()
@@ -1771,6 +1851,10 @@ final class FileTileItemView: NSCollectionViewItem {
         didSet { tile.isSelected = isSelected }
     }
 
+    override var highlightState: NSCollectionViewItem.HighlightState {
+        didSet { tile.isDropTarget = highlightState == .asDropTarget }
+    }
+
     func setHovered(_ hovered: Bool) {
         tile.setHovered(hovered)
     }
@@ -1796,8 +1880,11 @@ final class TileGridItemView: NSView {
             checkbox.isHidden = !(isSelected || hovering)
         }
     }
+    var isDropTarget = false {
+        didSet { if oldValue != isDropTarget { needsDisplay = true } }
+    }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1853,6 +1940,10 @@ final class TileGridItemView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        if isDropTarget {
+            Theme.drawDropTarget(in: bounds.insetBy(dx: 1, dy: 1), radius: 4)
+            return
+        }
         if isSelected {
             Theme.selection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4).fill()

@@ -195,7 +195,7 @@ private final class StorageBarView: NSView {
         didSet { needsDisplay = true }
     }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
         let radius = bounds.height / 2

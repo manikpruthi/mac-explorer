@@ -219,7 +219,7 @@ class HoverButton: NSButton {
         }
     }
 
-    override var isFlipped: Bool { true }
+    nonisolated override var isFlipped: Bool { true }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -255,7 +255,7 @@ class HoverButton: NSButton {
 
     var currentBackgroundColor: NSColor? {
         if !isEnabled { return nil }
-        if isDropTarget { return Theme.selection }
+        if isDropTarget { return Theme.dropTarget }
         if pressing { return pressedColor }
         if hovering { return hoverColor }
         if isActive { return activeColor ?? Theme.selection }
@@ -266,6 +266,8 @@ class HoverButton: NSButton {
         let color = currentBackgroundColor
         layer?.cornerRadius = cornerRadius
         layer?.backgroundColor = color.map { Theme.resolved($0, for: effectiveAppearance).cgColor }
+        layer?.borderWidth = isDropTarget && isEnabled ? 1.5 : 0
+        layer?.borderColor = Theme.accent.cgColor
         needsDisplay = true
     }
 
