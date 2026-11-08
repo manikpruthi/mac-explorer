@@ -2692,8 +2692,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         submenu.addItem(makeMenuItem("Quick Share", icon: "paperplane") { [weak self] in
             self?.shareViaQuickShare(urls: urls)
         })
+        // Inside the list (below Quick Share): a new Mac Mail message with the selection attached.
+        submenu.addItem(.separator())
+        let mailItem = makeMenuItem("Email with Mac Mail", icon: "envelope") { [weak self] in
+            MacMailHandoff.send(urls) { error in
+                if let error { self?.showToast(error, isError: true) }
+            }
+        }
+        mailItem.isEnabled = urls.contains(where: \.isFileURL)
+        submenu.addItem(mailItem)
         if let services = sharingServices(for: urls), !services.isEmpty {
-            submenu.addItem(.separator())
             for service in services {
                 let capturedURLs = urls
                 let capturedService = service

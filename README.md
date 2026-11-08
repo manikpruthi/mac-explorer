@@ -96,6 +96,8 @@ views, Electron/Chromium components, or third-party dependencies.
   **Quick Share**, which sends files
   to nearby Android phones via [QuickShare-Mac](https://github.com/manikpruthi/quickshare-mac)
   using a `quickshare://send` handoff (no document-open handoff; HTML and every other file type work).
+  Below it, **Email with Mac Mail** opens a new message in Mac Mail (the companion mail app) with the selected
+  files already attached (folders are zipped first); it shows a toast if Mac Mail isn't installed.
 - **Shared file clipboard** — file URLs are published to `NSPasteboard` for Finder interop; internal
   cut intent never leaves the app.
 - **Indexed, scoped search** — queries the macOS **Spotlight index** for the current folder first
@@ -237,6 +239,7 @@ used.
 - `Sources/Services/SearchService.swift` — search query parser (wildcards, quoted phrases, filters),
   Spotlight `MDQuery` lookup scoped to the current folder, the bounded folder walk, merging, and
   relevance ranking.
+- `Sources/Services/MacMailHandoff.swift` — "Email with Mac Mail": opens the selected files with Mac Mail, which starts a new message with them attached.
 - `Sources/Services/PermissionsService.swift` — `lstat`/`chmod`/`chflags` permission reads and
   writes, owner/group names, Locked flag handling, and recursive apply.
 - `Sources/Services/DuplicateFinder.swift` — size bucketing, head hashing, and streamed SHA-256
