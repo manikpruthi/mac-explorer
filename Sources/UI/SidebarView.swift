@@ -446,7 +446,12 @@ final class SidebarOutlineView: NSOutlineView {
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        super.draggingEnded(sender)
+        // draggingEnded(_:) is an optional NSDraggingDestination method that
+        // NSTableView/NSOutlineView don't implement, so an unconditional
+        // super call raises "unrecognized selector" and aborts the app.
+        if NSOutlineView.instancesRespond(to: #selector(NSDraggingDestination.draggingEnded(_:))) {
+            super.draggingEnded(sender)
+        }
         onDragLeft?()
     }
 
