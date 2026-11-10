@@ -33,7 +33,7 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
     private var addressEditing = false
     private let searchWidth: CGFloat = 220
 
-    private struct CrumbModel {
+    private struct CrumbModel: Equatable {
         let label: String
         let path: String
         let icon: String?
@@ -162,14 +162,16 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
         searchValue: String,
         sidebarVisible: Bool
     ) {
+        let locationChanged = currentLocation != location
+        if locationChanged { endSearchEditing() }
         currentLocation = location
         currentSystem = system
         backButton.isEnabled = canBack
         forwardButton.isEnabled = canForward
         upButton.isEnabled = canUp
-        sidebarButton.isActive = false
+        sidebarButton.isActive = sidebarVisible
         sidebarButton.updateBackground()
-        if searchField.stringValue != searchValue && window?.firstResponder !== searchField.currentEditor() {
+        if searchField.stringValue != searchValue && (locationChanged || searchField.currentEditor() == nil) {
             searchField.stringValue = searchValue
         }
         searchField.isEnabled = searchEnabled
@@ -182,8 +184,12 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
     }
 
     private func rebuildCrumbs() {
+        let updatedCrumbs = makeCrumbs()
+        guard updatedCrumbs != crumbs else { return }
+        currentOverflowButton = nil
+        hiddenCrumbs = []
         crumbsView.subviews.forEach { $0.removeFromSuperview() }
-        crumbs = makeCrumbs()
+        crumbs = updatedCrumbs
         guard !crumbs.isEmpty else { return }
 
         let collapsed = crumbs.count > 5
@@ -350,6 +356,11 @@ final class NavigationBarView: ThemedView, NSTextFieldDelegate {
         addressContainer.strokeColor = Theme.controlBorder
         rebuildCrumbs()
         needsLayout = true
+    }
+
+    func endSearchEditing() {
+        guard let editor = searchField.currentEditor(), window?.firstResponder === editor else { return }
+        window?.makeFirstResponder(nil)
     }
 
     func focusSearch() {

@@ -40,6 +40,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     private var mode: ViewMode = .details
     private var selected: Set<String> = []
     private var focusedPath: String?
+    /// Stable origin for consecutive Shift-arrow moves, separate from the moving focus.
+    private var extensionAnchor: String?
     private var renamingPath: String?
     /// Forces the next update() to reload every cell (first load, appearance change).
     private var needsFullReload = true
@@ -269,6 +271,11 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     ) {
         layer?.backgroundColor = Theme.resolved(Theme.content, for: effectiveAppearance).cgColor
         let modeChanged = mode != self.mode
+        // A keyboard selection echoed back by the delegate is not a new focus change.
+        if modeChanged || entries != self.entries || isSearch != self.isSearch
+            || focused != focusedPath || selected != self.selected {
+            extensionAnchor = nil
+        }
         // Status bar, details pane, or watcher refreshes can re-render mid-drag. Only a
         // change to what is listed invalidates the marquee; otherwise keep it running and
         // keep its live selection instead of the (throttled) copy echoed back.
@@ -390,8 +397,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     private func refreshTableSelectionVisuals() {
-        for row in 0..<tableView.numberOfRows where row < entries.count {
-            guard let rowView = tableView.rowView(atRow: row, makeIfNecessary: false) as? FileRowView else { continue }
+        tableView.enumerateAvailableRowViews { [self] view, row in
+            guard row >= 0, row < entries.count, let rowView = view as? FileRowView else { return }
             let highlighted = selected.contains(entries[row].path)
             let focused = entries[row].path == focusedPath
             if rowView.marqueeSelected != highlighted {
@@ -541,6 +548,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !syncingSelection else { return }
+        extensionAnchor = nil
         let paths = tableView.selectedRowIndexes.compactMap { index in
             index < entries.count ? entries[index].path : nil
         }
@@ -643,6 +651,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     private func handleTableContext(row: Int, event: NSEvent) {
+        extensionAnchor = nil
         if row >= 0 && row < entries.count {
             if !tableView.selectedRowIndexes.contains(row) {
                 tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
@@ -713,6 +722,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     private func publishCollectionSelection(focus: IndexPath?) {
+        extensionAnchor = nil
         let paths = collectionView.selectionIndexPaths.compactMap { path -> String? in
             path.item < entries.count ? entries[path.item].path : nil
         }
@@ -734,23 +744,49 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     private func handleCollectionContext(indexPath: IndexPath?, event: NSEvent) {
+        extensionAnchor = nil
         if let indexPath, indexPath.item < entries.count {
             if !collectionView.selectionIndexPaths.contains(indexPath) {
+                syncingSelection = true
                 collectionView.selectionIndexPaths = [indexPath]
+                syncingSelection = false
                 publishCollectionSelection(focus: indexPath)
+                syncCollectionSelection()
             }
             delegate?.fileListContextMenu(entry: entries[indexPath.item], event: event)
         } else {
+            syncingSelection = true
             collectionView.selectionIndexPaths = []
+            syncingSelection = false
+            publishCollectionSelection(focus: nil)
+            syncCollectionSelection()
             delegate?.fileListContextMenu(entry: nil, event: event)
         }
     }
 
+    private func gridColumnCount() -> Int {
+        layoutSubtreeIfNeeded()
+        collectionView.layoutSubtreeIfNeeded()
+        // Read the actual first row: AppKit may round spacing and available width.
+        if let first = collectionView.layoutAttributesForItem(at: IndexPath(item: 0, section: 0)) {
+            var columns = 1
+            for index in 1..<entries.count {
+                guard let attributes = collectionView.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) else { break }
+                if attributes.frame.minY > first.frame.minY + 1 { return columns }
+                columns += 1
+            }
+            return columns
+        }
+        guard let layout = collectionView.collectionViewLayout as? NSCollectionViewFlowLayout else { return 1 }
+        let spacing = layout.minimumInteritemSpacing
+        let available = collectionView.bounds.width - layout.sectionInset.left - layout.sectionInset.right
+        return max(1, Int((max(0, available) + spacing) / max(1, layout.itemSize.width + spacing)))
+    }
+
     func moveGridFocus(horizontal: Int, vertical: Int, extend: Bool) {
+        if !extend { extensionAnchor = nil }
         guard !entries.isEmpty else { return }
-        let itemWidth: CGFloat = mode == .medium ? 98 : (mode == .tiles ? 250 : 124)
-        let available = max(itemWidth, collectionView.bounds.width - 28)
-        let columns = max(1, Int(available / (itemWidth + 2)))
+        let columns = gridColumnCount()
         var index = focusedPath.flatMap { path in entries.firstIndex(where: { $0.path == path }) } ?? -1
         if index == -1 {
             index = (horizontal < 0 || vertical < 0) ? entries.count - 1 : 0
@@ -761,7 +797,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         let target = entries[index]
         var paths = selected
         if extend {
-            let anchorIndex = focusedPath.flatMap { path in entries.firstIndex(where: { $0.path == path }) } ?? index
+            if extensionAnchor == nil { extensionAnchor = focusedPath ?? target.path }
+            let anchorIndex = extensionAnchor.flatMap { path in entries.firstIndex(where: { $0.path == path }) } ?? index
             let start = min(anchorIndex, index)
             let end = max(anchorIndex, index)
             paths = Set(entries[start...end].map { $0.path })
@@ -776,6 +813,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     func selectAllEntries() {
+        extensionAnchor = nil
         let paths = Set(entries.map { $0.path })
         selected = paths
         if mode.isGrid || mode == .tiles {
@@ -783,12 +821,14 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         } else {
             syncTableSelection()
         }
-        delegate?.fileListSelectionDidChange(Array(paths), focused: entries.first?.path)
+        delegate?.fileListSelectionDidChange(Array(paths), focused: focusedPath)
     }
 
     func deselectAllEntries() {
+        extensionAnchor = nil
         selected = []
-        if mode.isGrid || mode == .tiles { collectionView.selectionIndexPaths = [] } else { tableView.deselectAll(nil) }
+        focusedPath = nil
+        syncMarqueeVisuals()
         delegate?.fileListSelectionDidChange([], focused: nil)
     }
 
@@ -800,6 +840,7 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
 
     @discardableResult
     func beginMarquee(at point: NSPoint, extend: Bool) -> Bool {
+        extensionAnchor = nil
         guard renamingPath == nil, !entries.isEmpty, let host = marqueeHost() else { return false }
         layoutSubtreeIfNeeded()
         let anchor = host.convert(point, from: self)
@@ -875,9 +916,14 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         let hitRect = NSRect(x: rect.minX, y: rect.minY, width: max(rect.width, 1), height: max(rect.height, 1))
         var next = marqueeBase
         if mode.isGrid || mode == .tiles {
-            for (index, entry) in entries.enumerated() {
-                guard let frame = marqueeItemFrame(at: index), frame.intersects(hitRect) else { continue }
-                next.insert(entry.path)
+            // Query the full content-space rectangle, including rows scrolled offscreen.
+            let attributes = collectionView.collectionViewLayout?.layoutAttributesForElements(in: hitRect) ?? []
+            for attribute in attributes {
+                guard attribute.representedElementCategory == .item,
+                      let indexPath = attribute.indexPath, indexPath.section == 0,
+                      indexPath.item >= 0, indexPath.item < entries.count,
+                      attribute.frame.intersects(hitRect) else { continue }
+                next.insert(entries[indexPath.item].path)
             }
         } else {
             // Rows span the full width, so only the vertical extent matters; this also
@@ -908,12 +954,17 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
     }
 
     private func marqueeItemIndex(at hostPoint: NSPoint) -> Int? {
-        for (index, _) in entries.enumerated() {
-            if let frame = marqueeItemFrame(at: index), frame.contains(hostPoint) {
-                return index
-            }
+        if mode.isGrid || mode == .tiles {
+            guard let indexPath = collectionView.indexPathForItem(at: hostPoint),
+                  indexPath.section == 0, indexPath.item >= 0, indexPath.item < entries.count,
+                  let frame = marqueeItemFrame(at: indexPath.item), frame.contains(hostPoint) else { return nil }
+            return indexPath.item
         }
-        return nil
+        let row = tableView.row(at: hostPoint)
+        // row(at:) alone can identify a row beside the columns; that remains blank area.
+        guard row >= 0, row < entries.count,
+              tableView.rect(ofRow: row).contains(hostPoint) else { return nil }
+        return row
     }
 
     private func syncMarqueeVisuals() {
@@ -1231,14 +1282,14 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         let editor = RenameTextField()
         editor.stringValue = entry.name
         editor.font = NSFont.systemFont(ofSize: 13)
-        editor.onCommit = { [weak self] value in
+        editor.onCommit = { [weak self, weak editor] value in
             self?.renameEditor = nil
-            editor.removeFromSuperview()
+            editor?.removeFromSuperview()
             self?.delegate?.fileListRename(entry, to: value)
         }
-        editor.onCancel = { [weak self] in
+        editor.onCancel = { [weak self, weak editor] in
             self?.renameEditor = nil
-            editor.removeFromSuperview()
+            editor?.removeFromSuperview()
             self?.delegate?.fileListCancelRename()
         }
         if mode.isGrid || mode == .tiles {
@@ -1248,7 +1299,8 @@ final class FileListView: NSView, NSTableViewDataSource, NSTableViewDelegate, NS
         }
         editor.frame = frame
         renameEditor = editor
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor, self.renameEditor === editor else { return }
             self.window?.makeFirstResponder(editor)
             if let textEditor = editor.currentEditor() {
                 let base = FileKinds.baseName(entry.name).count
@@ -1520,8 +1572,8 @@ final class IconCollectionView: NSCollectionView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        if indexPathForItem(at: point) == nil, onMarquee?(.begin, event) == true { return }
+        // The host also sees item clicks so they end any keyboard extension sequence.
+        if onMarquee?(.begin, event) == true { return }
         super.mouseDown(with: event)
     }
 

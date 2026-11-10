@@ -38,8 +38,7 @@ final class GalleryView: ThemedView {
         content.addSubview(spinner)
         content.addSubview(emptyLabel)
         content.addSubview(emptySub)
-        emptyLabel.isHidden = true
-        emptySub.isHidden = true
+        rebuild()
     }
 
     required init?(coder: NSCoder) {
@@ -70,6 +69,8 @@ final class GalleryView: ThemedView {
     }
 
     func update(root: String, entries: [FileEntry], truncated: Bool, loading: Bool, errorMessage: String?) {
+        guard self.root != root || self.entries != entries || self.truncated != truncated
+            || self.loading != loading || self.errorMessage != errorMessage else { return }
         self.root = root
         self.entries = entries
         self.truncated = truncated
@@ -85,7 +86,7 @@ final class GalleryView: ThemedView {
         cards = []
         yearLabels = []
         countLabel.stringValue = loading ? "Loading…" : "\(entries.count) item\(entries.count == 1 ? "" : "s")"
-        noteLabel.stringValue = "Photos and images from \(root)\(truncated ? " · showing the most recent items" : "")"
+        noteLabel.stringValue = "Photos and images from \(root)\(truncated ? " · partial results from a limited scan" : "")"
 
         spinner.isHidden = !(loading && entries.isEmpty)
         if loading && entries.isEmpty { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
@@ -116,8 +117,9 @@ final class GalleryView: ThemedView {
             yearLabels.append(label)
             for entry in groups[year] ?? [] {
                 let card = GalleryCardView(entry: entry)
+                card.isSelected = entry.path == selectedPath
                 card.onOpen = { [weak self] in
-                    self?.selectedPath = entry.path
+                    self?.select(entry)
                     self?.onOpen?(entry)
                 }
                 card.onSelect = { [weak self] in

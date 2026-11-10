@@ -181,6 +181,8 @@ final class IconService {
         )
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
             let boxed = ImageBox(representation?.nsImage)
+            // Quick Look's image size is in points; charge the actual backing pixels.
+            let cost = representation.map { $0.cgImage.bytesPerRow * $0.cgImage.height } ?? 0
             let keyValue = key
             Task { @MainActor in
                 guard let self else { return }
@@ -189,7 +191,7 @@ final class IconService {
                     self.thumbnailCache.setObject(
                         image,
                         forKey: keyValue as NSString,
-                        cost: Int(image.size.width * image.size.height * 4)
+                        cost: cost
                     )
                 }
                 let waiters = self.queue.removeValue(forKey: keyValue) ?? []

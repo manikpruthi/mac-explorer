@@ -121,7 +121,7 @@ final class PermissionsOverlay: OverlayView, DefaultActionOverlay, NSTextFieldDe
         nameLabel.stringValue = paths.count == 1 ? PathTools.basename(first) : "\(paths.count) items (showing the first)"
         ownerLabel.stringValue = "Owner: \(info.owner) · Group: \(info.group)"
         lockBox.state = info.locked ? .on : .off
-        let hasFolder = paths.contains { PermissionsService.read($0)?.isDirectory == true }
+        let hasFolder = paths.contains { FileService.statInfo($0, followSymlinks: false)?.isDirectory == true }
         recursiveBox.isHidden = !hasFolder
         if info.isSymlink {
             messageLabel.stringValue = "This is a symbolic link; macOS uses the permissions of the item it points to."

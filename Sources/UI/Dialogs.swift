@@ -124,6 +124,7 @@ final class PropertiesOverlay: OverlayView {
     private var values: [(String, String)] = []
     private var loaded = false
     private var errorMessage: String?
+    private var scanTask: Task<Void, Never>?
 
     init(paths: [String], kind: FileKind?) {
         super.init(cardSize: NSSize(width: 460, height: 540))
@@ -171,11 +172,41 @@ final class PropertiesOverlay: OverlayView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    deinit {
+        scanTask?.cancel()
+    }
+
+    override func viewWillMove(toSuperview newSuperview: NSView?) {
+        if newSuperview == nil { cancelScan() }
+        super.viewWillMove(toSuperview: newSuperview)
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil, window != nil { cancelScan() }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if dismissOnOutsideClick, !card.frame.contains(convert(event.locationInWindow, from: nil)) {
+            cancelScan()
+        }
+        super.mouseDown(with: event)
+    }
+
+    private func cancelScan() {
+        scanTask?.cancel()
+        scanTask = nil
+    }
+
     private func load(paths: [String], kind: FileKind?) {
-        Task.detached(priority: .userInitiated) { [paths] in
+        scanTask = Task.detached(priority: .userInitiated) { [weak self, paths] in
+            guard !Task.isCancelled else { return }
             let result = FileService.properties(paths)
+            guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
-                self?.apply(result: result, kind: kind)
+                guard let self, self.scanTask?.isCancelled == false else { return }
+                self.scanTask = nil
+                self.apply(result: result, kind: kind)
             }
         }
     }
@@ -261,6 +292,7 @@ final class PropertiesOverlay: OverlayView {
     }
 
     @objc private func okPressed() {
+        cancelScan()
         onDismiss?()
     }
 

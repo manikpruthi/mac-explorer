@@ -118,7 +118,7 @@ final class SMBDiscovery: NSObject, @preconcurrency NetServiceBrowserDelegate, @
 enum NetworkService {
     @MainActor
     static func state() async -> NetworkState {
-        let mounted = mountedShares()
+        let mounted = await Task.detached(priority: .utility) { mountedShares() }.value
         let discovery = SMBDiscovery()
         let (servers, error) = await discovery.discover()
         return NetworkState(servers: servers, mounted: mounted, error: error)

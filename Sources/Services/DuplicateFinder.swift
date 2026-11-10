@@ -46,6 +46,10 @@ enum DuplicateFinder {
         var stack = [start]
 
         walk: while let current = stack.popLast() {
+            if Task.isCancelled || Date() >= stopAt {
+                truncated = true
+                break
+            }
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: current) else { continue }
             for name in names {
                 if Task.isCancelled || Date() > stopAt || scanned >= maxFiles {
@@ -86,19 +90,32 @@ enum DuplicateFinder {
         var buffer = [UInt8](repeating: 0, count: 1 << 20)
 
         compare: for (size, paths) in candidates.sorted(by: { $0.key > $1.key }) {
-            if Task.isCancelled {
+            if Task.isCancelled || Date() >= stopAt {
                 truncated = true
                 break
             }
             var byHead: [Data: [String]] = [:]
             for path in paths {
-                if let digest = hash(path, limit: 16 * 1024, buffer: &buffer) {
+                if Task.isCancelled || Date() >= stopAt {
+                    truncated = true
+                    break compare
+                }
+                let digest = hash(path, limit: 16 * 1024, stopAt: stopAt, buffer: &buffer)
+                if Task.isCancelled || Date() >= stopAt {
+                    truncated = true
+                    break compare
+                }
+                if let digest {
                     byHead[digest, default: []].append(path)
                 }
                 done += 1
                 if done & 63 == 0 { progress?(.comparing(done: done, total: total)) }
             }
             for (_, sameHead) in byHead where sameHead.count > 1 {
+                if Task.isCancelled || Date() >= stopAt {
+                    truncated = true
+                    break compare
+                }
                 // Small files were read completely by the head hash.
                 if size <= 16 * 1024 {
                     groups.append(DuplicateGroup(size: size, paths: ordered(sameHead)))
@@ -106,20 +123,30 @@ enum DuplicateFinder {
                 }
                 var byFull: [Data: [String]] = [:]
                 for path in sameHead {
-                    if Task.isCancelled {
+                    if Task.isCancelled || Date() >= stopAt {
                         truncated = true
                         break compare
                     }
-                    if let digest = hash(path, limit: nil, buffer: &buffer) {
+                    let digest = hash(path, limit: nil, stopAt: stopAt, buffer: &buffer)
+                    if Task.isCancelled || Date() >= stopAt {
+                        truncated = true
+                        break compare
+                    }
+                    if let digest {
                         byFull[digest, default: []].append(path)
                     }
                 }
                 for (_, same) in byFull where same.count > 1 {
+                    if Task.isCancelled || Date() >= stopAt {
+                        truncated = true
+                        break compare
+                    }
                     groups.append(DuplicateGroup(size: size, paths: ordered(same)))
                 }
             }
         }
         groups.sort { $0.wastedBytes == $1.wastedBytes ? $0.paths[0] < $1.paths[0] : $0.wastedBytes > $1.wastedBytes }
+        truncated = truncated || Task.isCancelled || Date() >= stopAt
         return DuplicateScanResult(root: start, groups: groups, scannedFiles: scanned, truncated: truncated)
     }
 
@@ -127,20 +154,25 @@ enum DuplicateFinder {
         paths.sorted { $0.count == $1.count ? $0 < $1 : $0.count < $1.count }
     }
 
-    private static func hash(_ path: String, limit: Int?, buffer: inout [UInt8]) -> Data? {
+    private static func hash(_ path: String, limit: Int?, stopAt: Date, buffer: inout [UInt8]) -> Data? {
+        guard !Task.isCancelled, Date() < stopAt else { return nil }
         let fd = open(path, O_RDONLY)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
         var hasher = SHA256()
         var remaining = limit ?? Int.max
         while remaining > 0 {
+            guard !Task.isCancelled, Date() < stopAt else { return nil }
             let want = min(buffer.count, remaining)
             let count = buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, want) }
+            guard !Task.isCancelled, Date() < stopAt else { return nil }
             if count < 0 { return nil }
             if count == 0 { break }
             buffer.withUnsafeBytes { hasher.update(bufferPointer: UnsafeRawBufferPointer(rebasing: $0.prefix(count))) }
             remaining -= count
         }
+        // Never publish a partial digest when a read or hash crossed the deadline.
+        guard !Task.isCancelled, Date() < stopAt else { return nil }
         return Data(hasher.finalize())
     }
 }

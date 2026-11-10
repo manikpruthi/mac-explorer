@@ -44,6 +44,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private var networkLoading = false
     private var networkNotice: String?
     private var networkLoaded = false
+    private var networkTask: Task<Void, Never>?
+    private var networkRefreshPending = false
+    private var networkToken = UUID()
+    private var systemInfoTask: Task<Void, Never>?
+    private var systemInfoRefreshPending = false
 
     private let directoryWatcher = DirectoryWatcher()
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -390,11 +395,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             searchValue: activeTab.searchQuery,
             sidebarVisible: preferences.sidebarVisible
         )
-        updateCommandBar()
+        let selection = selectedEntries()
+        updateCommandBar(selection: selection)
         applyPaneVisibility()
         renderContent()
-        updateDetailsPane()
-        statusBar.update(label: statusLabel(), view: activeTab.view, detailsOpen: preferences.detailsOpen)
+        updateDetailsPane(selection: selection)
+        statusBar.update(label: statusLabel(selection: selection), view: activeTab.view, detailsOpen: preferences.detailsOpen)
         updateProgress()
         updateDirectoryWatch()
         window?.contentView?.needsDisplay = true
@@ -433,17 +439,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         store.saveSession(snapshot)
     }
 
-    private func updateCommandBar() {
+    private func updateCommandBar(selection: [FileEntry]? = nil) {
         let tab = activeTab
+        let folders = (selection ?? selectedEntries()).filter { $0.isDirectory && $0.kind != .app }
         commandBar.update(
             canCreate: tab.location.writePath != nil && !tab.isSearching,
-            canModify: tab.location.writePath != nil,
+            canModify: !tab.location.isArchive && (tab.location.writePath != nil || tab.isSearching),
             canPaste: tab.location.writePath != nil && !clipboard.paths.isEmpty && !tab.isSearching,
-            canPin: selectedFolderPaths().isEmpty == false && !tab.location.isArchive,
+            canPin: !folders.isEmpty && !tab.location.isArchive,
             canUndoDelete: canUndoDelete,
             canRestore: tab.selected.count > 0 && isTrashLocation(),
             canEmptyTrash: isTrashLocation(),
-            pinnedSelection: !selectedFolderPaths().isEmpty && selectedFolderPaths().allSatisfy { store.isPinned($0) },
+            pinnedSelection: !folders.isEmpty && folders.allSatisfy { store.isPinned($0.path) },
             selectionCount: tab.selected.count,
             view: tab.view,
             sortKey: tab.sortKey,
@@ -734,10 +741,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
     }
 
-    private func statusLabel() -> String {
+    private func statusLabel(selection: [FileEntry]? = nil) -> String {
         let tab = activeTab
         if !tab.selected.isEmpty {
-            let size = selectedEntries().reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
+            let size = (selection ?? selectedEntries()).reduce(Int64(0)) { $0 + ($1.isDirectory ? 0 : $1.size) }
             let suffix = size > 0 ? " · \(FormatTools.bytes(size))" : ""
             return "\(FormatTools.plural(tab.selected.count, "item")) selected\(suffix)"
         }
@@ -792,15 +799,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     /// The details and preview panes share one slot; whichever is closed is released entirely.
-    private func updateDetailsPane() {
+    private func updateDetailsPane(selection: [FileEntry]? = nil) {
         if preferences.detailsOpen {
-            ensureDetailsPane().update(entries: selectedEntries(), isArchive: activeTab.location.isArchive)
+            ensureDetailsPane().update(entries: selection ?? selectedEntries(), isArchive: activeTab.location.isArchive)
         } else if let detailsPane {
             detailsPane.removeFromSuperview()
             self.detailsPane = nil
         }
         if preferences.previewOpen && !preferences.detailsOpen {
-            ensurePreviewPane().update(entries: selectedEntries())
+            ensurePreviewPane().update(entries: selection ?? selectedEntries())
         } else if let previewPane {
             previewPane.tearDown()
             previewPane.removeFromSuperview()
@@ -809,9 +816,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func updateSelectionDependentUI() {
-        updateCommandBar()
-        statusBar.update(label: statusLabel(), view: activeTab.view, detailsOpen: preferences.detailsOpen)
-        updateDetailsPane()
+        let selection = selectedEntries()
+        updateCommandBar(selection: selection)
+        statusBar.update(label: statusLabel(selection: selection), view: activeTab.view, detailsOpen: preferences.detailsOpen)
+        updateDetailsPane(selection: selection)
         if let fileListView, contentHost === fileListView {
             updateFileList(fileListView)
         }
@@ -951,6 +959,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         renamingPath = nil
         cancelSearchWork()
         if newTab {
+            leaveActiveTab()
             let tab = TabModel(location: location, view: preferences.view)
             tabs.append(tab)
             activeIndex = tabs.count - 1
@@ -1015,7 +1024,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func refresh() {
-        systemInfo = FileService.systemInfo()
+        refreshSystemInfo()
         renamingPath = nil
         switch activeTab.location {
         case .gallery:
@@ -1044,16 +1053,38 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func volumesDidChange() {
-        systemInfo = FileService.systemInfo()
-        if case .fs(let path) = activeTab.location, !FileManager.default.fileExists(atPath: path) {
-            reloadActiveTab()
-        } else {
-            render()
+        refreshSystemInfo()
+        reloadActiveTab()
+    }
+
+    private func refreshSystemInfo() {
+        guard systemInfoTask == nil else {
+            systemInfoRefreshPending = true
+            return
+        }
+        systemInfoTask = Task.detached(priority: .utility) { [weak self] in
+            let info = FileService.systemInfo()
+            guard !Task.isCancelled else { return }
+            await self?.applySystemInfo(info)
+        }
+    }
+
+    private func applySystemInfo(_ info: SystemInfo) {
+        systemInfoTask = nil
+        systemInfo = info
+        store.ensureDefaults(system: info)
+        render()
+        if systemInfoRefreshPending {
+            systemInfoRefreshPending = false
+            refreshSystemInfo()
         }
     }
 
     /// Called before another tab becomes active.
     private func leaveActiveTab() {
+        if let editor = window?.firstResponder as? NSTextView, editor.isFieldEditor {
+            window?.makeFirstResponder(nil)
+        }
         cancelSearchWork()
         // The cancelled search can't finish, so drop it rather than leave the tab stuck on
         // "Searching…"; a finished search is kept and shown again when the tab comes back.
@@ -1092,11 +1123,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         else if index < activeIndex { activeIndex -= 1 }
         else if index == activeIndex { activeIndex = min(index, tabs.count - 1) }
         persistSession()
-        if activeTab.entries.isEmpty, activeTab.location.readPath != nil {
-            reloadActiveTab()
-        } else {
-            render()
-        }
+        refreshActivatedTab()
     }
 
     private func activateTab(index: Int) {
@@ -1105,7 +1132,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         leaveActiveTab()
         activeIndex = index
         persistSession()
-        if activeTab.entries.isEmpty, activeTab.location.readPath != nil, activeTab.isSearching {
+        refreshActivatedTab()
+    }
+
+    private func refreshActivatedTab() {
+        if activeTab.needsReloadAfterOperation {
+            activeTab.needsReloadAfterOperation = false
+            if activeTab.isSearching {
+                listingStaleWhileSearching = activeTab.location.readPath != nil
+                activeTab.searchEntries = []
+                render()
+                handleSearchChange(activeTab.searchQuery)
+            } else {
+                reloadActiveTab()
+            }
+        } else if activeTab.entries.isEmpty, activeTab.location.readPath != nil, activeTab.isSearching {
             // Keep the kept search on screen; the listing reloads once the search is cleared.
             listingStaleWhileSearching = true
             render()
@@ -1273,23 +1314,34 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         networkLoaded = true
         networkLoading = true
         render()
-        Task { @MainActor in
-            let state = await NetworkService.state()
-            self.networkState = state
-            self.networkLoading = false
-            self.render()
-        }
+        loadNetworkState()
     }
 
     private func refreshNetwork() {
         networkLoading = true
         networkNotice = nil
         render()
-        Task { @MainActor in
+        loadNetworkState()
+    }
+
+    private func loadNetworkState() {
+        guard networkTask == nil else {
+            networkRefreshPending = true
+            return
+        }
+        let token = UUID()
+        networkToken = token
+        networkTask = Task { @MainActor [weak self] in
             let state = await NetworkService.state()
+            guard !Task.isCancelled, let self, self.networkToken == token else { return }
+            self.networkTask = nil
             self.networkState = state
-            self.networkLoading = false
+            self.networkLoading = self.networkRefreshPending
             self.render()
+            if self.networkRefreshPending {
+                self.networkRefreshPending = false
+                self.loadNetworkState()
+            }
         }
     }
 
@@ -1378,10 +1430,34 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     // MARK: - File operations
 
+    private struct OperationOrigin: Sendable {
+        let tabID: UUID
+        let location: Location
+    }
+
+    private var operationOrigin: OperationOrigin {
+        OperationOrigin(tabID: activeTab.id, location: activeTab.location)
+    }
+
+    private func refreshOperationOrigin(_ origin: OperationOrigin, selection: [String]? = nil, rename: Bool = false) {
+        guard let tab = tabs.first(where: { $0.id == origin.tabID }), tab.location == origin.location else { return }
+        if let selection {
+            tab.selected = Set(selection)
+            tab.focusedPath = selection.first
+        }
+        if tab === activeTab {
+            if rename { renamingPath = selection?.first }
+            if tab.isSearching { handleSearchChange(tab.searchQuery) } else { reloadActiveTab() }
+        } else {
+            tab.entries = []
+            tab.needsReloadAfterOperation = true
+        }
+    }
+
     private func copySelection(cut: Bool) {
         let paths = Array(activeTab.selected)
         guard !paths.isEmpty else { return }
-        if cut && activeTab.location.writePath == nil {
+        if cut && activeTab.location.isArchive {
             showToast("Cut isn’t available inside archives.", isError: true)
             return
         }
@@ -1405,83 +1481,78 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             showToast("The clipboard is empty.", isError: true)
             return
         }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let outcome = FileService.paste(plan: plan, into: destination)
-            await self?.finishPaste(outcome, plan: plan, destination: destination)
+            await self?.finishPaste(outcome, plan: plan, destination: destination, origin: origin)
         }
     }
 
-    private func finishPaste(_ outcome: PasteOutcome, plan: FileService.PastePlan, destination: String) {
+    private func finishPaste(_ outcome: PasteOutcome, plan: FileService.PastePlan, destination: String, origin: OperationOrigin) {
         if plan.cut && plan.internalSource {
             PasteboardService.finishCut(remaining: outcome.remainingSources)
         }
         clipboard = PasteboardService.current()
         if let count = outcome.result.count, count > 0 {
             showToast("Pasted \(FormatTools.plural(count, "item"))")
-            if destination == activeTab.location.writePath {
-                let paths = outcome.result.paths ?? []
-                activeTab.selected = Set(paths)
-                activeTab.focusedPath = paths.first
-            }
         }
         if !outcome.result.ok, let error = outcome.result.error, error != "The clipboard is empty." {
             showToast(error, isError: true)
         }
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: destination == origin.location.writePath ? outcome.result.paths : nil)
     }
 
     private func transfer(paths: [String], destination: String, copy: Bool) {
-        guard !paths.isEmpty, !activeTab.location.isArchive else { return }
+        guard !paths.isEmpty else { return }
+        if case .archive(_, let root, _) = activeTab.location,
+           paths.contains(where: { $0 == root || $0.hasPrefix(root + "/") })
+                || destination == root || destination.hasPrefix(root + "/") { return }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.transfer(paths, to: destination, copy: copy)
-            await self?.finishTransfer(result, destination: destination, copy: copy)
+            await self?.finishTransfer(result, destination: destination, copy: copy, origin: origin)
         }
     }
 
-    private func finishTransfer(_ result: OpResult, destination: String, copy: Bool) {
+    private func finishTransfer(_ result: OpResult, destination: String, copy: Bool, origin: OperationOrigin) {
         if let count = result.count, count > 0 {
             showToast("\(copy ? "Copied" : "Moved") \(FormatTools.plural(count, "item"))")
-            if destination == activeTab.location.writePath {
-                let paths = result.paths ?? []
-                activeTab.selected = Set(paths)
-                activeTab.focusedPath = paths.first
-            }
         }
         if !result.ok, let error = result.error {
             showToast(error, isError: true)
         }
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: destination == origin.location.writePath ? result.paths : nil)
     }
 
     private func createFolder() {
         guard let path = activeTab.location.writePath, !activeTab.isSearching else { return }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.createFolder(dir: path)
-            await self?.finishCreate(result, rename: true)
+            await self?.finishCreate(result, rename: true, origin: origin)
         }
     }
 
     private func createTextFile() {
         guard let path = activeTab.location.writePath, !activeTab.isSearching else { return }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.createTextFile(dir: path)
-            await self?.finishCreate(result, rename: true)
+            await self?.finishCreate(result, rename: true, origin: origin)
         }
     }
 
-    private func finishCreate(_ result: OpResult, rename: Bool) {
+    private func finishCreate(_ result: OpResult, rename: Bool, origin: OperationOrigin) {
         guard result.ok, let path = result.path else {
             showToast(result.error ?? "Could not create the item.", isError: true)
             return
         }
-        activeTab.selected = [path]
-        activeTab.focusedPath = path
-        if rename { renamingPath = path }
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: [path], rename: rename)
     }
 
     private func beginRename() {
-        guard activeTab.location.writePath != nil, activeTab.selected.count == 1 else { return }
+        guard !activeTab.location.isArchive, activeTab.selected.count == 1,
+              activeTab.location.writePath != nil || activeTab.isSearching else { return }
         renamingPath = activeTab.selected.first
         if let fileListView, contentHost === fileListView {
             fileListView.prepareForRename(renamingPath)
@@ -1491,17 +1562,16 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     private func commitRename(_ entry: FileEntry, to name: String) {
         renamingPath = nil
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.rename(entry.path, to: name)
-            await self?.finishRename(result)
+            await self?.finishRename(result, origin: origin)
         }
     }
 
-    private func finishRename(_ result: OpResult) {
+    private func finishRename(_ result: OpResult, origin: OperationOrigin) {
         if result.ok, let path = result.path {
-            activeTab.selected = [path]
-            activeTab.focusedPath = path
-            reloadActiveTab()
+            refreshOperationOrigin(origin, selection: [path])
         } else {
             showToast(result.error ?? "Could not rename this item.", isError: true)
             updateFileList()
@@ -1510,14 +1580,15 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     private func trashSelection() {
         let paths = Array(activeTab.selected)
-        guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
+        guard !paths.isEmpty, !activeTab.location.isArchive else { return }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let receipt = FileService.trashWithReceipt(paths)
-            await self?.finishTrash(receipt)
+            await self?.finishTrash(receipt, origin: origin)
         }
     }
 
-    private func finishTrash(_ receipt: FileService.TrashReceipt) {
+    private func finishTrash(_ receipt: FileService.TrashReceipt, origin: OperationOrigin) {
         let result = receipt.result
         if !receipt.items.isEmpty {
             store.lastDeleted = receipt.items
@@ -1541,14 +1612,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 showToast(error, isError: true)
             }
         }
-        activeTab.selected = []
-        activeTab.focusedPath = nil
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: [])
     }
 
     private var canUndoDelete: Bool {
-        guard let items = store.lastDeleted, !items.isEmpty else { return false }
-        return items.allSatisfy { FileService.exists($0.trashPath) }
+        store.lastDeleted?.isEmpty == false
     }
 
     private func undoDelete() {
@@ -1557,13 +1625,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return
         }
         let trashPaths = items.map(\.trashPath)
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.restoreItems(trashPaths)
-            await self?.finishUndoDelete(result)
+            await self?.finishUndoDelete(result, origin: origin)
         }
     }
 
-    private func finishUndoDelete(_ result: OpResult) {
+    private func finishUndoDelete(_ result: OpResult, origin: OperationOrigin) {
         if let count = result.count, count > 0 {
             showToast("Restored \(FormatTools.plural(count, "item"))")
         }
@@ -1573,15 +1642,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let remaining = (store.lastDeleted ?? []).filter { FileService.exists($0.trashPath) }
         store.lastDeleted = remaining.isEmpty ? nil : remaining
         store.save()
-        activeTab.selected = []
-        activeTab.focusedPath = nil
-        refresh()
+        refreshOperationOrigin(origin, selection: [])
         updateSelectionDependentUI()
     }
 
     private func confirmPermanentDelete() {
         let paths = Array(activeTab.selected)
-        guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
+        guard !paths.isEmpty, !activeTab.location.isArchive else { return }
+        let origin = operationOrigin
         showConfirm(
             title: "Delete permanently?",
             message: "\(FormatTools.plural(paths.count, "item")) will be deleted permanently. This can’t be undone.",
@@ -1591,12 +1659,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             guard let self else { return }
             Task.detached(priority: .userInitiated) { [weak self] in
                 let result = FileService.remove(paths)
-                await self?.finishRemove(result)
+                await self?.finishRemove(result, origin: origin)
             }
         }
     }
 
-    private func finishRemove(_ result: OpResult) {
+    private func finishRemove(_ result: OpResult, origin: OperationOrigin) {
         store.lastDeleted = nil
         store.save()
         if let count = result.count, count > 0 {
@@ -1605,9 +1673,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if !result.ok, let error = result.error {
             showToast(error, isError: true)
         }
-        activeTab.selected = []
-        activeTab.focusedPath = nil
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: [])
     }
 
     private func isTrashLocation() -> Bool {
@@ -1617,27 +1683,27 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     private func restoreSelectedItems() {
         let paths = Array(activeTab.selected)
         guard !paths.isEmpty else { return }
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.restoreItems(paths)
-            await self?.finishRestore(result)
+            await self?.finishRestore(result, origin: origin)
         }
     }
 
-    private func finishRestore(_ result: OpResult) {
+    private func finishRestore(_ result: OpResult, origin: OperationOrigin) {
         if let count = result.count, count > 0 {
             showToast("Restored \(FormatTools.plural(count, "item"))")
         }
         if !result.ok, let error = result.error {
             showToast(error, isError: true)
         }
-        activeTab.selected = []
-        activeTab.focusedPath = nil
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: [])
     }
 
     private func emptyTrashBin() {
         guard isTrashLocation() else { return }
         let trashPath = systemInfo.trashPath
+        let origin = operationOrigin
         showConfirm(
             title: "Empty Trash?",
             message: "All items in the Trash will be deleted permanently. This can’t be undone.",
@@ -1647,12 +1713,12 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             guard let self else { return }
             Task.detached(priority: .userInitiated) { [weak self] in
                 let result = FileService.emptyTrashBin(at: trashPath)
-                await self?.finishEmptyTrash(result)
+                await self?.finishEmptyTrash(result, origin: origin)
             }
         }
     }
 
-    private func finishEmptyTrash(_ result: OpResult) {
+    private func finishEmptyTrash(_ result: OpResult, origin: OperationOrigin) {
         store.lastDeleted = nil
         store.save()
         if let count = result.count, count > 0 {
@@ -1661,9 +1727,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         if !result.ok, let error = result.error {
             showToast(error, isError: true)
         }
-        activeTab.selected = []
-        activeTab.focusedPath = nil
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: [])
     }
 
     private func compressSelection() {
@@ -1682,24 +1746,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         let paths = Array(activeTab.selected)
         guard !paths.isEmpty, activeTab.location.writePath != nil else { return }
         let parent = activeTab.location.writePath!
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = FileService.compressToArchive(paths, destinationParent: parent)
-            await self?.finishCompress(result)
+            await self?.finishCompress(result, origin: origin)
         }
     }
 
-    private func finishCompress(_ result: OpResult) {
+    private func finishCompress(_ result: OpResult, origin: OperationOrigin) {
         if result.ok {
             showToast("Created archive")
-        }
-        if let path = result.path {
-            activeTab.selected = [path]
-            activeTab.focusedPath = path
         }
         if !result.ok, let error = result.error {
             showToast(error, isError: true)
         }
-        reloadActiveTab()
+        refreshOperationOrigin(origin, selection: result.path.map { [$0] })
     }
 
 
@@ -1784,20 +1845,17 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
     }
 
     private func extractArchive(_ archivePath: String, destination: String) {
+        let origin = operationOrigin
         Task.detached(priority: .userInitiated) { [weak self] in
             let result = ArchiveService.extractAll(archivePath, destinationParent: destination)
-            await self?.finishExtract(result, destination: destination)
+            await self?.finishExtract(result, destination: destination, origin: origin)
         }
     }
 
-    private func finishExtract(_ result: OpResult, destination: String) {
+    private func finishExtract(_ result: OpResult, destination: String, origin: OperationOrigin) {
         if result.ok, let path = result.path {
             showToast("Extracted to “\(PathTools.basename(path))”")
-            if destination == activeTab.location.writePath {
-                activeTab.selected = [path]
-                activeTab.focusedPath = path
-            }
-            reloadActiveTab()
+            refreshOperationOrigin(origin, selection: destination == origin.location.writePath ? [path] : nil)
         } else {
             showToast(result.error ?? "Could not extract this archive.", isError: true)
         }
@@ -1845,10 +1903,13 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             self.activeTab.selected = [path]
             self.activeTab.focusedPath = path
         }
-        duplicates.onTrash = { [weak self] paths in
+        duplicates.onTrash = { [weak self] paths, completion in
+            guard let origin = self?.operationOrigin else { completion([]); return }
             Task.detached(priority: .userInitiated) { [weak self] in
                 let receipt = FileService.trashWithReceipt(paths)
-                await self?.finishTrash(receipt)
+                let removed = receipt.items.map { ($0.originDir as NSString).appendingPathComponent($0.name) }
+                await completion(removed)
+                await self?.finishTrash(receipt, origin: origin)
             }
         }
         presentOverlay(duplicates)
@@ -2106,25 +2167,6 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         guard let match = entries.first(where: { displayName($0.name, preferences.showExtensions).lowercased().hasPrefix(needle) }) else { return }
         activeTab.selected = [match.path]
         activeTab.focusedPath = match.path
-        if activeTab.view.isGrid || activeTab.view == .tiles {
-            ensureFileListView().update(
-                entries: entries,
-                mode: activeTab.view,
-                selected: [match.path],
-                focused: match.path,
-                renamingPath: renamingPath,
-                cutPaths: clipboard.cut ? Set(clipboard.paths) : [],
-                showExtensions: preferences.showExtensions,
-                sortKey: activeTab.sortKey,
-                sortDir: activeTab.sortDir,
-                loading: activeTab.loading,
-                errorMessage: activeTab.pathError,
-                permissionError: activeTab.permissionError,
-                isSearch: activeTab.isSearching
-            )
-        } else {
-            updateFileList()
-        }
         updateSelectionDependentUI()
     }
 
@@ -2236,6 +2278,11 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
 
     func windowWillClose(_ notification: Notification) {
         cancelSearchWork()
+        networkToken = UUID()
+        networkTask?.cancel()
+        networkTask = nil
+        systemInfoTask?.cancel()
+        systemInfoTask = nil
         previewPane?.tearDown()
         directoryWatcher.stop()
         for token in workspaceObservers {
@@ -2455,11 +2502,9 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         }
         let paths = Array(tab.selected)
         let isFolder = entry.isDirectory && entry.kind != .app
-        let writable = tab.location.writePath != nil
+        let writable = !tab.location.isArchive && (tab.location.writePath != nil || tab.isSearching)
         let archive = tab.location.isArchive
-        let pinPaths = isFolder ? paths.filter { path in
-            selectedEntries().first(where: { $0.path == path })?.isDirectory == true
-        } : []
+        let pinPaths = isFolder ? selectedEntries().filter { $0.isDirectory }.map(\.path) : []
         let allPinned = !pinPaths.isEmpty && pinPaths.allSatisfy { store.isPinned($0) }
 
         let menu = NSMenu()
@@ -2561,7 +2606,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 self?.emptyTrashBin()
             })
         }
-        if writable && !archive {
+        if tab.location.writePath != nil && !archive {
             menu.addItem(.separator())
             menu.addItem(makeMenuItem("Compress", icon: "archivebox") { [weak self] in
                 self?.activeTab.selected = Set(paths)
@@ -2918,7 +2963,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             showToast(result.error ?? "Could not eject “\(name)”.", isError: true)
             return
         }
-        systemInfo = FileService.systemInfo()
+        refreshSystemInfo()
         showToast("Ejected “\(name)”.")
         if case .fs(let current) = activeTab.location,
            current == path || current.hasPrefix(path + "/") {
@@ -3403,7 +3448,7 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         case #selector(copy(_:)):
             return !activeTab.selected.isEmpty
         case #selector(cut(_:)), #selector(deleteAction(_:)), #selector(deletePermanentlyAction(_:)):
-            return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
+            return !activeTab.location.isArchive && !activeTab.selected.isEmpty
         case #selector(undoDeleteAction(_:)):
             return canUndoDelete
         case #selector(restoreAction(_:)), #selector(restoreSelectedAction(_:)):

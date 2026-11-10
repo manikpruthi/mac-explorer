@@ -635,14 +635,14 @@ enum FileService {
         var seenHardLinks = Set<String>()
 
         walk: while let current = stack.popLast() {
-            if Date() >= deadline || inspected >= maxItems {
+            if Task.isCancelled || Date() >= deadline || inspected >= maxItems {
                 totals.truncated = true
                 break
             }
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: current) else { continue }
             for name in names {
                 inspected += 1
-                if inspected >= maxItems {
+                if Task.isCancelled || Date() >= deadline || inspected >= maxItems {
                     totals.truncated = true
                     break walk
                 }
@@ -686,7 +686,10 @@ enum FileService {
         var hasSymlink = false
 
         for target in targets {
-            guard let info = statInfo(target) else {
+            if Task.isCancelled { return empty }
+            let link = statInfo(target, followSymlinks: false)
+            let followed = link?.isSymlink == true ? statInfo(target) : link
+            guard let info = followed else {
                 var failure = empty
                 failure.error = "This item no longer exists."
                 failure.path = target
@@ -694,7 +697,7 @@ enum FileService {
                 return failure
             }
             hasDirectory = hasDirectory || info.isDirectory
-            hasSymlink = hasSymlink || isSymlink(target)
+            hasSymlink = hasSymlink || (link?.isSymlink ?? false)
             if !info.isDirectory { totalAllocated += info.allocated }
             created = min(created, info.created)
             modified = max(modified, info.modified)
@@ -919,8 +922,9 @@ enum FileService {
             // Store paths relative to the shared ancestor rather than absolute paths,
             // and keep symlinks as links (-y) instead of following them.
             let base = allSameParent ? parents[0] : commonAncestor(parents)
+            // Prefix operands so names beginning with '-' cannot become zip options.
             let relative = resolvedSources.map { path -> String in
-                base == "/" ? String(path.dropFirst()) : String(path.dropFirst(base.count + 1))
+                "./" + (base == "/" ? String(path.dropFirst()) : String(path.dropFirst(base.count + 1)))
             }
             process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
             process.currentDirectoryURL = URL(fileURLWithPath: base)

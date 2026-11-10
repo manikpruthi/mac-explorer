@@ -266,13 +266,132 @@ struct SearchQuery: Sendable, Equatable {
         return result
     }
 
+    /// Greedy glob matching with only string indices, not character arrays or a DP table.
+    private static func matchesGlob(_ pattern: String, _ name: String) -> Bool {
+        // Keep libc's complete bracket/locale semantics for the existing ASCII case.
+        if pattern.utf8.allSatisfy({ $0 < 128 }), name.utf8.allSatisfy({ $0 < 128 }) {
+            return fnmatch(pattern, name, 0) == 0
+        }
+        var p = pattern.startIndex
+        var n = name.startIndex
+        var star: String.Index?
+        var retry = n
+        while n < name.endIndex {
+            if p < pattern.endIndex {
+                let token = pattern[p]
+                var next = pattern.index(after: p)
+                if token == "*" {
+                    star = next
+                    retry = n
+                    p = next
+                    continue
+                }
+                var matches = token == "?" || token == name[n]
+                if token == "\\" {
+                    matches = next < pattern.endIndex && pattern[next] == name[n]
+                    if next < pattern.endIndex { next = pattern.index(after: next) }
+                } else if token == "[", let bracket = matchesBracket(pattern, from: next, character: name[n]) {
+                    matches = bracket.matches
+                    next = bracket.next
+                }
+                if matches {
+                    p = next
+                    n = name.index(after: n)
+                    continue
+                }
+            }
+            guard let star, retry < name.endIndex else { return false }
+            retry = name.index(after: retry)
+            n = retry
+            p = star
+        }
+        while p < pattern.endIndex, pattern[p] == "*" { p = pattern.index(after: p) }
+        return p == pattern.endIndex
+    }
+
+    /// Brackets still consume one character: literals, ranges, negation, escapes and
+    /// POSIX ASCII classes. An unclosed bracket is a literal, as in fnmatch.
+    private static func matchesBracket(
+        _ pattern: String, from start: String.Index, character: Character
+    ) -> (matches: Bool, next: String.Index)? {
+        var i = start
+        var negated = false
+        if i < pattern.endIndex, pattern[i] == "!" || pattern[i] == "^" {
+            negated = true
+            i = pattern.index(after: i)
+        }
+        var first = true
+        var matched = false
+        while i < pattern.endIndex {
+            if pattern[i] == "]", !first {
+                return (negated ? !matched : matched, pattern.index(after: i))
+            }
+            first = false
+            var lower = pattern[i]
+            i = pattern.index(after: i)
+            if lower == "\\" {
+                guard i < pattern.endIndex else { return nil }
+                lower = pattern[i]
+                i = pattern.index(after: i)
+            } else if lower == "[", i < pattern.endIndex, pattern[i] == ":" {
+                let classStart = pattern.index(after: i)
+                var end = classStart
+                while end < pattern.endIndex, pattern[end] != ":" { end = pattern.index(after: end) }
+                guard end < pattern.endIndex else { return nil }
+                let close = pattern.index(after: end)
+                guard close < pattern.endIndex, pattern[close] == "]",
+                      let classMatch = matchesASCIIClass(pattern[classStart..<end], character: character) else {
+                    return nil
+                }
+                matched = matched || classMatch
+                i = pattern.index(after: close)
+                continue
+            }
+            if i < pattern.endIndex, pattern[i] == "-" {
+                var end = pattern.index(after: i)
+                if end < pattern.endIndex, pattern[end] != "]" {
+                    if pattern[end] == "\\" { end = pattern.index(after: end) }
+                    guard end < pattern.endIndex else { return nil }
+                    let upper = pattern[end]
+                    matched = matched || (lower <= character && character <= upper)
+                    i = pattern.index(after: end)
+                    continue
+                }
+            }
+            matched = matched || lower == character
+        }
+        return nil
+    }
+
+    private static func matchesASCIIClass(_ name: Substring, character: Character) -> Bool? {
+        let scalars = character.unicodeScalars
+        let scalar = scalars.first!
+        let ascii = scalars.count == 1 && scalar.value < 128
+        let value = ascii ? Int32(scalar.value) : 0
+        switch name {
+        case "alnum": return ascii && isalnum(value) != 0
+        case "alpha": return ascii && isalpha(value) != 0
+        case "blank": return ascii && isblank(value) != 0
+        case "cntrl": return ascii && iscntrl(value) != 0
+        case "digit": return ascii && isdigit(value) != 0
+        case "graph": return ascii && isgraph(value) != 0
+        case "lower": return ascii && islower(value) != 0
+        case "print": return ascii && isprint(value) != 0
+        case "punct": return ascii && ispunct(value) != 0
+        case "space": return ascii && isspace(value) != 0
+        case "upper": return ascii && isupper(value) != 0
+        case "xdigit": return ascii && isxdigit(value) != 0
+        default: return nil
+        }
+    }
+
     /// Name-only check, used before the (cheaper to skip) stat.
     func matchesName(_ name: String) -> Bool {
         guard !terms.isEmpty else { return true }
         let folded = Self.fold(name)
         for term in terms {
             if Self.isWildcard(term) {
-                if fnmatch(term, folded, 0) != 0 { return false }
+                if !Self.matchesGlob(term, folded) { return false }
             } else if !folded.contains(Self.unescape(term)) {
                 return false
             }

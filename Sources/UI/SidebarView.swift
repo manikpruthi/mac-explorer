@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 @MainActor
 final class SidebarNode: NSObject {
@@ -56,7 +57,6 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private let scroll = makeScroller()
     private let outline = SidebarOutlineView()
     private var roots: [SidebarNode] = []
-    private var nodesByPath: [String: SidebarNode] = [:]
     private var activePath: String?
     private var activeKind: SidebarNode.Kind?
     private var syncingSelection = false
@@ -64,6 +64,9 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     private var lastPinned: [String] = []
     private var lastVolumePaths: [String] = []
     private var dropTargetNode: SidebarNode?
+    // One scan at a time; pending work is found in the existing tree, not a task queue.
+    private var childLoadTask: Task<Void, Never>?
+    private weak var loadingNode: SidebarNode?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -101,6 +104,19 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        childLoadTask?.cancel()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            childLoadTask?.cancel()
+        } else {
+            startNextChildLoad()
+        }
     }
 
     override func layout() {
@@ -142,58 +158,74 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
         }
 
         if structureChanged {
+            // A reload invalidates an in-flight snapshot; keep its slot until it exits.
+            childLoadTask?.cancel()
+            let initial = roots.isEmpty
+            let quickChanged = initial || pinned != lastPinned
+            let pcChanged = initial || volumePaths != lastVolumePaths
             lastPinned = pinned
             lastVolumePaths = volumePaths
-            nodesByPath = [:]
 
-            let quickSection = SidebarNode(kind: .section, title: "Quick access", icon: "")
-            let specialByPath = Dictionary(uniqueKeysWithValues: system.specialFolders.map { ($0.path, $0) })
-            for path in pinned {
-                let label = specialByPath[path]?.label ?? (path == system.home ? "Home" : PathTools.basename(path))
-                let icon = specialByPath[path].map { iconForKey($0.key) } ?? "folder"
-                let node = SidebarNode(kind: .folder, title: label, icon: icon, path: path)
-                node.canPin = true
-                quickSection.children.append(node)
-                nodesByPath[path] = node
-            }
-            if quickSection.children.isEmpty {
-                let empty = SidebarNode(kind: .placeholder, title: "Nothing pinned yet", icon: "")
-                quickSection.children.append(empty)
-            }
+            let quickSection = roots.first { $0.title == "Quick access" && $0.isSection }
+                ?? SidebarNode(kind: .section, title: "Quick access", icon: "")
+            let pcSection = roots.first { $0.title == "This PC" && $0.isSection }
+                ?? SidebarNode(kind: .section, title: "This PC", icon: "")
 
-            let pcSection = SidebarNode(kind: .section, title: "This PC", icon: "")
-            let volumeNodes = system.volumes.map { volume -> SidebarNode in
-                let node = SidebarNode(kind: .volume, title: volume.name, icon: "internaldrive", path: volume.path)
-                if volume.total > 0 {
-                    node.volumeText = "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))"
+            if quickChanged {
+                let previous = quickSection.children
+                quickSection.children = pinned.map { path in
+                    let special = system.specialFolders.first { $0.path == path }
+                    let label = special?.label ?? (path == system.home ? "Home" : PathTools.basename(path))
+                    let icon = special.map { iconForKey($0.key) } ?? "folder"
+                    let node = previous.first { $0.path == path && $0.title == label && $0.icon == icon }
+                        ?? SidebarNode(kind: .folder, title: label, icon: icon, path: path)
+                    node.canPin = true
+                    return node
                 }
-                return node
-            }
-            pcSection.children.append(contentsOf: volumeNodes)
-            if system.specialFolders.contains(where: { $0.key == "trash" }) {
-                pcSection.children.append(SidebarNode(kind: .trash, title: "Trash", icon: "trash", path: system.trashPath))
-            }
-
-            let roots: [SidebarNode] = [
-                SidebarNode(kind: .home, title: "Home", icon: "house"),
-                SidebarNode(kind: .gallery, title: "Gallery", icon: "photo.on.rectangle"),
-                SidebarNode(kind: .network, title: "Network", icon: "network"),
-                quickSection,
-                pcSection,
-            ]
-            self.roots = roots
-
-            outline.reloadData()
-            if quickAccessOpen { outline.expandItem(quickSection) } else { outline.collapseItem(quickSection) }
-            if thisPcOpen { outline.expandItem(pcSection) } else { outline.collapseItem(pcSection) }
-        } else {
-            // Same volumes, but free space moves: keep the tooltip text current without a reload.
-            let byPath = Dictionary(system.volumes.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
-            for section in roots where section.isSection {
-                for node in section.children where node.kind == .volume {
-                    guard let path = node.path, let volume = byPath[path], volume.total > 0 else { continue }
-                    node.volumeText = "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))"
+                if quickSection.children.isEmpty {
+                    quickSection.children = [SidebarNode(kind: .placeholder, title: "Nothing pinned yet", icon: "")]
                 }
+            }
+
+            if pcChanged {
+                let previous = pcSection.children
+                pcSection.children = system.volumes.map { volume in
+                    previous.first { $0.kind == .volume && $0.path == volume.path && $0.title == volume.name }
+                        ?? SidebarNode(kind: .volume, title: volume.name, icon: "internaldrive", path: volume.path)
+                }
+                if system.specialFolders.contains(where: { $0.key == "trash" }) {
+                    pcSection.children.append(previous.first { $0.kind == .trash && $0.path == system.trashPath }
+                        ?? SidebarNode(kind: .trash, title: "Trash", icon: "trash", path: system.trashPath))
+                }
+            }
+
+            if initial {
+                roots = [
+                    SidebarNode(kind: .home, title: "Home", icon: "house"),
+                    SidebarNode(kind: .gallery, title: "Gallery", icon: "photo.on.rectangle"),
+                    SidebarNode(kind: .network, title: "Network", icon: "network"),
+                    quickSection,
+                    pcSection,
+                ]
+                outline.reloadData()
+                if quickAccessOpen { outline.expandItem(quickSection) }
+                if thisPcOpen { outline.expandItem(pcSection) }
+            } else {
+                // Stable item identities preserve expansion, including loaded descendants.
+                if quickChanged { outline.reloadItem(quickSection, reloadChildren: true) }
+                if pcChanged { outline.reloadItem(pcSection, reloadChildren: true) }
+            }
+            if let loadingNode, !containsNode(loadingNode) { childLoadTask?.cancel() }
+            if let dropTargetNode, !containsNode(dropTargetNode) { setDropTarget(nil) }
+            startNextChildLoad()
+        }
+
+        // Free space changes do not require replacing volume nodes or their children.
+        for section in roots where section.isSection {
+            for node in section.children where node.kind == .volume {
+                guard let volume = system.volumes.first(where: { $0.path == node.path }) else { continue }
+                node.volumeText = volume.total > 0
+                    ? "\(FormatTools.bytes(volume.free)) free of \(FormatTools.bytes(volume.total))" : nil
             }
         }
 
@@ -234,7 +266,6 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
     }
 
     private func node(for path: String) -> SidebarNode? {
-        if let direct = nodesByPath[path] { return direct }
         for root in roots {
             if let found = findNode(path: path, in: root) { return found }
         }
@@ -307,36 +338,119 @@ final class SidebarView: ThemedView, NSOutlineViewDataSource, NSOutlineViewDeleg
 
     func outlineViewItemWillExpand(_ notification: Notification) {
         guard let node = notification.userInfo?["NSObject"] as? SidebarNode else { return }
-        guard node.kind == .folder || node.kind == .volume, !node.loaded, let path = node.path else { return }
-        node.loaded = true
-        if let listing = try? FileService.readDirectory(path) {
-            let folders = listing.entries
-                .filter { $0.isDirectory && $0.kind != .app && !$0.hidden }
-                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-                .prefix(60)
-            node.children = folders.map { entry in
-                let child = SidebarNode(kind: .folder, title: entry.name, icon: "folder", path: entry.path)
-                child.canPin = true
-                return child
+        guard node.kind == .folder || node.kind == .volume, !node.loaded, node.path != nil else { return }
+        node.children = [SidebarNode(kind: .placeholder, title: "Loading subfolders…", icon: "")]
+        outline.reloadItem(node, reloadChildren: true)
+    }
+
+    private func containsNode(_ target: SidebarNode) -> Bool {
+        func contains(_ node: SidebarNode) -> Bool {
+            node === target || node.children.contains(where: contains)
+        }
+        return roots.contains(where: contains)
+    }
+
+    private func startNextChildLoad() {
+        guard childLoadTask == nil, window != nil else { return }
+        func pending(_ node: SidebarNode) -> SidebarNode? {
+            guard outline.isItemExpanded(node), outline.row(forItem: node) >= 0 else { return nil }
+            if (node.kind == .folder || node.kind == .volume), !node.loaded { return node }
+            for child in node.children {
+                if let found = pending(child) { return found }
+            }
+            return nil
+        }
+        guard let node = roots.lazy.compactMap({ pending($0) }).first, let path = node.path else { return }
+        loadingNode = node
+        childLoadTask = Task.detached(priority: .userInitiated) { [weak self, weak node] in
+            let result: ([FileEntry], String?)
+            do {
+                result = (try Self.readSubfolders(path), nil)
+            } catch {
+                result = ([], error.localizedDescription)
+            }
+            let cancelled = Task.isCancelled
+            await MainActor.run { [weak self, weak node] in
+                guard let self else { return }
+                let discard = cancelled || self.childLoadTask?.isCancelled == true
+                self.childLoadTask = nil
+                self.loadingNode = nil
+                if !discard, self.window != nil, let node,
+                   self.containsNode(node), self.outline.isItemExpanded(node),
+                   self.outline.row(forItem: node) >= 0, !node.loaded {
+                    node.loaded = true
+                    node.children = result.0.map { entry in
+                        let child = SidebarNode(kind: .folder, title: entry.name, icon: "folder", path: entry.path)
+                        child.canPin = true
+                        return child
+                    }
+                    if node.children.isEmpty {
+                        let placeholder = SidebarNode(kind: .placeholder,
+                            title: result.1 == nil ? "No subfolders" : "Unable to read subfolders", icon: "")
+                        placeholder.volumeText = result.1
+                        node.children = [placeholder]
+                    }
+                    self.outline.reloadItem(node, reloadChildren: true)
+                    self.refreshVisibleCells()
+                }
+                self.startNextChildLoad()
             }
         }
-        if node.children.isEmpty {
-            node.children = [SidebarNode(kind: .placeholder, title: "No subfolders", icon: "")]
+    }
+
+    /// Streams directory names and keeps only the alphabetically first 60 folders.
+    /// Unlike readDirectory, this does not allocate a whole listing or parallel stat tasks.
+    nonisolated private static func readSubfolders(_ path: String) throws -> [FileEntry] {
+        try Task.checkCancellation()
+        guard let directory = opendir(path) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
-        outline.reloadItem(node, reloadChildren: true)
+        defer { closedir(directory) }
+        var folders: [FileEntry] = []
+        while true {
+            try Task.checkCancellation()
+            errno = 0
+            guard let item = readdir(directory) else {
+                if errno != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                break
+            }
+            let nameCapacity = Int(item.pointee.d_namlen) + 1
+            let name = withUnsafePointer(to: &item.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: nameCapacity) {
+                    String(cString: $0)
+                }
+            }
+            guard !name.hasPrefix("."), (name as NSString).pathExtension.lowercased() != "app" else { continue }
+            let fullPath = (path as NSString).appendingPathComponent(name)
+            guard let entry = FileService.entry(name: name, path: fullPath), entry.isDirectory else { continue }
+            let index = folders.firstIndex { name.localizedStandardCompare($0.name) == .orderedAscending }
+                ?? folders.count
+            guard index < 60 else { continue }
+            if folders.count == 60 { folders.removeLast() }
+            folders.insert(entry, at: index)
+        }
+        return folders
     }
 
     func outlineViewItemDidCollapse(_ notification: Notification) {
         refreshVisibleCells()
         guard let node = notification.userInfo?["NSObject"] as? SidebarNode else { return }
         // Nodes now outlive navigation, so re-read a folder's subfolders the next time it opens.
-        if node.kind == .folder || node.kind == .volume { node.loaded = false }
+        if node.kind == .folder || node.kind == .volume {
+            node.loaded = false
+            node.children = []
+        }
+        if let loadingNode, loadingNode === node || outline.row(forItem: loadingNode) < 0 {
+            childLoadTask?.cancel()
+        }
+        startNextChildLoad()
         guard node.isSection else { return }
         delegate?.sidebarToggleSection(node.title, expanded: false)
     }
 
     func outlineViewItemDidExpand(_ notification: Notification) {
         refreshVisibleCells()
+        startNextChildLoad()
         guard let node = notification.userInfo?["NSObject"] as? SidebarNode, node.isSection else { return }
         delegate?.sidebarToggleSection(node.title, expanded: true)
     }

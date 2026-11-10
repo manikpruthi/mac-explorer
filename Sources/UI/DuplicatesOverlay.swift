@@ -4,7 +4,7 @@ import AppKit
 final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDelegate {
     var onReveal: ((String) -> Void)?
     var onOpen: ((String) -> Void)?
-    var onTrash: (([String]) -> Void)?
+    var onTrash: (([String], @escaping @MainActor @Sendable ([String]) -> Void) -> Void)?
 
     private enum Row {
         case header(Int)
@@ -27,6 +27,7 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
     private var groups: [DuplicateGroup] = []
     private var rows: [Row] = []
     private var marked = Set<String>()
+    private var trashPending = false
     private var scanTask: Task<Void, Never>?
     private var result: DuplicateScanResult?
 
@@ -165,9 +166,9 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
     }
 
     private func updateButtons() {
-        selectButton.isEnabled = !groups.isEmpty
-        clearButton.isEnabled = !marked.isEmpty
-        trashButton.isEnabled = !marked.isEmpty
+        selectButton.isEnabled = !trashPending && !groups.isEmpty
+        clearButton.isEnabled = !trashPending && !marked.isEmpty
+        trashButton.isEnabled = !trashPending && !marked.isEmpty
         trashButton.title = marked.isEmpty ? "Move to Trash" : "Move \(marked.count.formatted()) to Trash"
         revealButton.isEnabled = clickedPath() != nil
         layoutButtons()
@@ -212,7 +213,7 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
     }
 
     @objc private func trashPressed() {
-        guard !marked.isEmpty else { return }
+        guard !trashPending, !marked.isEmpty, let onTrash else { return }
         // Never trash every copy of a set from this dialog.
         let doomed = marked
         for group in groups where group.paths.allSatisfy({ doomed.contains($0) }) {
@@ -221,17 +222,23 @@ final class DuplicatesOverlay: OverlayView, NSTableViewDataSource, NSTableViewDe
             return
         }
         statusLabel.textColor = Theme.textPrimary
-        onTrash?(Array(doomed))
-        groups = groups.compactMap { group in
-            let remaining = group.paths.filter { !doomed.contains($0) }
-            return remaining.count > 1 ? DuplicateGroup(size: group.size, paths: remaining) : nil
+        trashPending = true
+        updateButtons()
+        onTrash(Array(doomed)) { [weak self] paths in
+            guard let self else { return }
+            let removed = Set(paths)
+            self.groups = self.groups.compactMap { group in
+                let remaining = group.paths.filter { !removed.contains($0) }
+                return remaining.count > 1 ? DuplicateGroup(size: group.size, paths: remaining) : nil
+            }
+            self.marked.subtract(removed)
+            self.trashPending = false
+            self.rebuildRows()
         }
-        marked = []
-        rebuildRows()
     }
 
     @objc private func toggleMark(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < rows.count, case .file(_, let path) = rows[sender.tag] else { return }
+        guard !trashPending, sender.tag >= 0, sender.tag < rows.count, case .file(_, let path) = rows[sender.tag] else { return }
         if sender.state == .on { marked.insert(path) } else { marked.remove(path) }
         updateButtons()
     }

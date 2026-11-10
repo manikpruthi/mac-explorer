@@ -13,6 +13,7 @@ final class TabModel {
     var focusedPath: String?
     var entries: [FileEntry] = [] { didSet { contentVersion &+= 1 } }
     var loading = false
+    var needsReloadAfterOperation = false
     var pathError: String?
     var permissionError = false
     var searchQuery = ""

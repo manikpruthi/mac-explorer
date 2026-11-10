@@ -1,6 +1,6 @@
 import AppKit
 
-struct QuickItem {
+struct QuickItem: Equatable {
     let path: String
     let label: String
 }
@@ -58,6 +58,7 @@ final class HomeView: ThemedView {
         recentCard.cornerRadius = 8
         content.addSubview(recentCard)
         content.addSubview(recentEmpty)
+        rebuild()
     }
 
     required init?(coder: NSCoder) {
@@ -65,6 +66,7 @@ final class HomeView: ThemedView {
     }
 
     func update(quickItems: [QuickItem], recent: [RecentItem], volumes: [Volume]) {
+        guard self.quickItems != quickItems || self.recent != recent || self.volumes != volumes else { return }
         self.quickItems = quickItems
         self.recent = recent
         self.volumes = volumes
