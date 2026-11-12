@@ -158,6 +158,7 @@
 				C91600F573FF38843064995D /* FileService.swift */,
 				A1B2C3D4E5F60718293A4B5C /* DirectoryWatcher.swift */,
 				240CBBF630D842A18B4CF86A /* PermissionsService.swift */,
+				A1E0C0DE00000000000000A1 /* MetadataService.swift */,
 				0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */,
 				0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */,
 				7AA46B59E5D17BB7ADD8687B /* ArchiveService.swift */,
@@ -232,6 +233,12 @@
 		3B8E6D4FA2E95C17B4F9A326 /* QuickLookPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */; };
 		240CBBF630D842A18B4CF86A /* PermissionsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsService.swift; sourceTree = "<group>"; };
 		296158BD57374DE8BABB5DD0 /* PermissionsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 240CBBF630D842A18B4CF86A /* PermissionsService.swift */; };
+		A1E0C0DE00000000000000C1 /* BulkMetadataOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BulkMetadataOverlay.swift; sourceTree = "<group>"; };
+		A1E0C0DE00000000000000C2 /* BulkMetadataOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C0DE00000000000000C1 /* BulkMetadataOverlay.swift */; };
+		A1E0C0DE00000000000000A1 /* MetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataService.swift; sourceTree = "<group>"; };
+		A1E0C0DE00000000000000A2 /* MetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C0DE00000000000000A1 /* MetadataService.swift */; };
+		A1E0C0DE00000000000000B1 /* MetadataOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataOverlay.swift; sourceTree = "<group>"; };
+		A1E0C0DE00000000000000B2 /* MetadataOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C0DE00000000000000B1 /* MetadataOverlay.swift */; };
 		0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateFinder.swift; sourceTree = "<group>"; };
 		6792DC14776A45B5ABF5F155 /* DuplicateFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */; };
 		0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchService.swift; sourceTree = "<group>"; };
@@ -261,6 +268,8 @@
 				1BF5ED78F13DE0DED9E97DD7 /* DetailsPaneView.swift */,
 				2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */,
 				51131F62D55C40F09577AD68 /* PermissionsOverlay.swift */,
+				A1E0C0DE00000000000000B1 /* MetadataOverlay.swift */,
+				A1E0C0DE00000000000000C1 /* BulkMetadataOverlay.swift */,
 				22DEA33D13C14A1CADD18779 /* DuplicatesOverlay.swift */,
 				DCB6B2B1F07943A78D23BC69 /* PreviewPaneView.swift */,
 				321B64A4D28CB40AF35F2247 /* Dialogs.swift */,
@@ -317,6 +326,9 @@
 				4F1295F698D92B5FCF14C00A /* in Sources */,
 				3B8E6D4FA2E95C17B4F9A326 /* in Sources */,
 				296158BD57374DE8BABB5DD0 /* in Sources */,
+				A1E0C0DE00000000000000A2 /* in Sources */,
+				A1E0C0DE00000000000000B2 /* in Sources */,
+				A1E0C0DE00000000000000C2 /* in Sources */,
 				6792DC14776A45B5ABF5F155 /* in Sources */,
 				989FC9C1492D4EC693F9F0C6 /* in Sources */,
 				764552E08E184AE991F72E52 /* in Sources */,

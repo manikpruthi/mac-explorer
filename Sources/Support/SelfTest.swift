@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import UniformTypeIdentifiers
 
 @MainActor
@@ -225,6 +226,7 @@ enum SelfTest {
         runDuplicateTests(root: root)
         runPermissionTests(root: root)
         runDefaultAppTests(root: root)
+        runMetadataTests(root: root)
 
         print("")
         print("\(passes) passed, \(failures) failed")
@@ -314,6 +316,85 @@ enum SelfTest {
         check("recursive keeps file execute bits", recursive.ok && PermissionsService.read(folder.path)?.mode == 0o750
               && child == 0o640 && tool == 0o750,
               "dir \(String(PermissionsService.read(folder.path)?.mode ?? 0, radix: 8)) child \(String(child ?? 0, radix: 8)) tool \(String(tool ?? 0, radix: 8))")
+    }
+
+    private static func runMetadataTests(root: URL) {
+        let dir = root.appendingPathComponent("metadata")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let text = dir.appendingPathComponent("note.txt").path
+        FileManager.default.createFile(atPath: text, contents: Data("x".utf8))
+        func item(_ path: String, _ key: MetadataKey) -> MetadataItem? {
+            MetadataService.read(path)?.groups.flatMap(\.items).first { $0.key == key }
+        }
+        let edits = [
+            MetadataService.set(.tags, value: "Red, Work", path: text),
+            MetadataService.set(.comment, value: "hello", path: text),
+            MetadataService.set(.created, value: "2020-01-02 03:04:05", path: text),
+        ]
+        _ = setxattr(text, "com.example.note", "plain", 5, 0, 0)
+        check("metadata edits apply", edits.allSatisfy { $0 == nil } && item(text, .tags)?.value == "Red, Work"
+              && item(text, .comment)?.value == "hello" && item(text, .created)?.value == "2020-01-02 03:04:05"
+              && item(text, .xattr("com.example.note"))?.value == "plain", edits.compactMap { $0 }.joined())
+        _ = setxattr(text, "com.apple.macl", "\u{1}", 1, 0, 0)
+        if let macl = item(text, .xattr("com.apple.macl")) {
+            check("macOS-managed attributes are read-only", !macl.removable && !macl.editable)
+        } else {
+            check("macOS-managed attributes are read-only", item(text, .xattr("com.apple.provenance")).map { !$0.removable } ?? true)
+        }
+        check("metadata rejects bad date", MetadataService.set(.modified, value: "yesterday", path: text) != nil)
+        let removed = MetadataService.remove([.tags, .comment, .xattr("com.example.note")], path: text)
+        check("metadata removes values", removed == nil && item(text, .tags)?.value == "" && item(text, .comment)?.value == ""
+              && item(text, .xattr("com.example.note")) == nil)
+
+        // A JPEG with GPS and camera fields: GPS clears without touching the rest.
+        let photo = dir.appendingPathComponent("photo.jpg")
+        if let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+           let image = context.makeImage(),
+           let destination = CGImageDestinationCreateWithURL(photo as CFURL, UTType.jpeg.identifier as CFString, 1, nil) {
+            let properties: [CFString: Any] = [
+                kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 37.3, kCGImagePropertyGPSLatitudeRef: "N"],
+                kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFMake: "Acme"],
+            ]
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+            CGImageDestinationFinalize(destination)
+        }
+        let gps = MetadataService.read(photo.path)?.groups.first { $0.kind == .embedded(.gps) }?.clearableItems.map(\.key) ?? []
+        let gpsError = MetadataService.remove(gps, path: photo.path)
+        let after = MetadataService.read(photo.path)
+        check("metadata clears GPS only", !gps.isEmpty && gpsError == nil && after?.groups.contains { $0.kind == .embedded(.gps) } == false
+              && item(photo.path, .embedded("tiff:Make"))?.value == "Acme", gpsError ?? "")
+        let makeError = MetadataService.set(.embedded("tiff:Make"), value: "Other", path: photo.path)
+        check("metadata edits embedded field", makeError == nil && item(photo.path, .embedded("tiff:Make"))?.value == "Other", makeError ?? "")
+
+        // Bulk clear: nested files and folders are cleared, package contents are left alone.
+        let tree = dir.appendingPathComponent("tree")
+        let nested = tree.appendingPathComponent("sub")
+        let package = tree.appendingPathComponent("Tool.app/Contents")
+        try? FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        let deep = nested.appendingPathComponent("deep.txt").path
+        let inPackage = package.appendingPathComponent("Info.txt").path
+        FileManager.default.createFile(atPath: deep, contents: Data("x".utf8))
+        FileManager.default.createFile(atPath: inPackage, contents: Data("x".utf8))
+        let nestedPhoto = nested.appendingPathComponent("photo.jpg").path
+        try? FileManager.default.copyItem(atPath: photo.path, toPath: nestedPhoto)
+        let photoDate = Date(timeIntervalSince1970: 1_600_000_000)
+        try? FileManager.default.setAttributes([.modificationDate: photoDate], ofItemAtPath: nestedPhoto)
+        for path in [deep, inPackage, nested.path] {
+            _ = MetadataService.set(.tags, value: "Blue", path: path)
+            _ = setxattr(path, "com.apple.quarantine", "0083;65a1b2c3;Safari;", 21, 0, 0)
+        }
+        let bulk = MetadataService.clear(paths: [tree.path], options: [.finder, .download, .embedded], recursive: true, progress: { _ in }, isCancelled: { false })
+        let bulkPhoto = MetadataService.read(nestedPhoto)?.groups.first { $0.kind == .embedded(.tiff) }?.items.map(\.key) ?? []
+        check("bulk clear empties nested items", bulk.failed == 0 && item(deep, .tags)?.value == "" && item(deep, .quarantine) == nil
+              && item(nested.path, .tags)?.value == "" && !bulkPhoto.contains(.embedded("tiff:Make")),
+              "\(bulk) \(bulkPhoto)")
+        check("bulk clear skips package contents", item(inPackage, .tags)?.value == "Blue" && item(inPackage, .quarantine) != nil)
+        let keptDate = (try? FileManager.default.attributesOfItem(atPath: nestedPhoto))?[.modificationDate] as? Date
+        check("image rewrite keeps modified date", keptDate == photoDate, "\(String(describing: keptDate))")
+        let stopped = MetadataService.clear(paths: [tree.path], options: [.finder], recursive: true, progress: { _ in }, isCancelled: { true })
+        check("bulk clear stops when cancelled", stopped.cancelled && stopped.changed == 0)
     }
 
     /// Read-only checks: they never change a real default app.

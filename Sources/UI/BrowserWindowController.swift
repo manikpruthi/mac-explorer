@@ -940,6 +940,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                 self.showPermissions(paths: [path])
             }
         }
+        if arguments.contains("--metadata"), let path = activeTab.focusedPath ?? visibleEntries().first?.path {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.showMetadata(path: path)
+            }
+        }
+        if arguments.contains("--clear-metadata"), let path = activeTab.focusedPath ?? visibleEntries().first?.path {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.showBulkMetadata(paths: [path])
+            }
+        }
         if arguments.contains("--duplicates"), let path = activeTab.location.writePath {
             showDuplicates(root: path)
         }
@@ -1892,6 +1904,21 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         presentOverlay(permissions)
     }
 
+    private func showMetadata(path: String) {
+        let metadata = MetadataOverlay(path: path)
+        metadata.onDismiss = { [weak self] in self?.dismissOverlay() }
+        metadata.onChanged = { [weak self] in self?.refresh() }
+        presentOverlay(metadata)
+    }
+
+    private func showBulkMetadata(paths: [String]) {
+        guard !paths.isEmpty else { return }
+        let bulk = BulkMetadataOverlay(paths: paths)
+        bulk.onDismiss = { [weak self] in self?.dismissOverlay() }
+        bulk.onFinished = { [weak self] _ in self?.refresh() }
+        presentOverlay(bulk)
+    }
+
     private func showDuplicates(root: String) {
         let duplicates = DuplicatesOverlay(root: root, showHidden: preferences.showHidden)
         duplicates.onDismiss = { [weak self] in self?.dismissOverlay() }
@@ -2626,6 +2653,18 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
                     self?.showPermissions(paths: paths)
                 })
             }
+            if paths.count == 1 {
+                menu.addItem(makeMenuItem("Metadata…", icon: "tag") { [weak self] in
+                    self?.activeTab.selected = Set(paths)
+                    self?.showMetadata(path: entry.path)
+                })
+            }
+            if writable && (paths.count > 1 || isFolder) {
+                menu.addItem(makeMenuItem("Clear metadata…", icon: "eraser") { [weak self] in
+                    self?.activeTab.selected = Set(paths)
+                    self?.showBulkMetadata(paths: paths)
+                })
+            }
             menu.addItem(makeMenuItem("Properties", icon: "info.circle", key: "i") { [weak self] in
                 self?.activeTab.selected = Set(paths)
                 self?.showProperties(paths: paths, kind: entry.kind)
@@ -3213,6 +3252,35 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         collectClipped("permissions")
         dismissOverlay()
 
+        showMetadata(path: testRoot.appendingPathComponent("alpha.txt").path)
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        report(overlay is MetadataOverlay, "metadata dialog")
+        collectClipped("metadata")
+        weak var closedMetadata = overlay
+        dismissOverlay()
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        report(closedMetadata == nil, "metadata dialog released on close")
+
+        showBulkMetadata(paths: [testRoot.appendingPathComponent("alpha.txt").path, testRoot.path])
+        report(overlay is BulkMetadataOverlay, "clear metadata dialog")
+        collectClipped("clear metadata")
+        dismissOverlay()
+
+        let bulkFolder = testRoot.appendingPathComponent("bulk-metadata/inner")
+        try? FileManager.default.createDirectory(at: bulkFolder, withIntermediateDirectories: true)
+        let bulkFile = bulkFolder.appendingPathComponent("tagged.txt")
+        FileManager.default.createFile(atPath: bulkFile.path, contents: Data("x".utf8))
+        try? (bulkFile as NSURL).setResourceValue(["Red"], forKey: .tagNamesKey)
+        showBulkMetadata(paths: [bulkFolder.deletingLastPathComponent().path])
+        (overlay as? BulkMetadataOverlay)?.pressConfirmForTesting()
+        for _ in 0..<30 where (overlay as? BulkMetadataOverlay)?.isFinishedForTesting != true {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        let tagsLeft = (try? bulkFile.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+        report((overlay as? BulkMetadataOverlay)?.isFinishedForTesting == true && tagsLeft.isEmpty, "clear metadata confirm clears nested file", "\(tagsLeft)")
+        collectClipped("clear metadata done")
+        dismissOverlay()
+
         showDuplicates(root: testRoot.path)
         try? await Task.sleep(nanoseconds: 600_000_000)
         collectClipped("duplicates")
@@ -3420,6 +3488,14 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
         guard !activeTab.selected.isEmpty else { return }
         showPermissions(paths: Array(activeTab.selected))
     }
+    @objc func metadataAction(_ sender: Any?) {
+        guard activeTab.selected.count == 1, let path = activeTab.selected.first else { return }
+        showMetadata(path: path)
+    }
+    @objc func clearMetadataAction(_ sender: Any?) {
+        guard !activeTab.selected.isEmpty else { return }
+        showBulkMetadata(paths: Array(activeTab.selected))
+    }
     @objc func goBackAction(_ sender: Any?) { goHistory(-1) }
     @objc func goForwardAction(_ sender: Any?) { goHistory(1) }
     @objc func goUpAction(_ sender: Any?) { goUp() }
@@ -3493,6 +3569,10 @@ final class BrowserWindowController: NSWindowController, NSWindowDelegate, NSMen
             return activeTab.location.writePath != nil
         case #selector(permissionsAction(_:)):
             return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
+        case #selector(clearMetadataAction(_:)):
+            return activeTab.location.writePath != nil && !activeTab.selected.isEmpty
+        case #selector(metadataAction(_:)):
+            return !activeTab.location.isArchive && activeTab.selected.count == 1
         case #selector(newTabAction(_:)):
             return true
         default:

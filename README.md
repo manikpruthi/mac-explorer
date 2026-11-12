@@ -15,6 +15,8 @@ views, Electron/Chromium components, or third-party dependencies.
 ![Search filters with the Spotlight index](docs/screenshots/search-filters.png)
 ![Preview pane](docs/screenshots/preview-pane.png)
 ![Permissions editor](docs/screenshots/permissions.png)
+![Metadata editor](docs/screenshots/metadata.png)
+![Clear metadata in bulk](docs/screenshots/clear-metadata.png)
 ![Find duplicates](docs/screenshots/duplicates.png)
 
 ## Features
@@ -69,6 +71,30 @@ views, Electron/Chromium components, or third-party dependencies.
   (octal) field and `rwxr-xr-x` display, plus the Finder **Locked** flag. For folders, **Apply to
   enclosed items** walks the tree without following symlinks; enclosed files only keep execute bits
   if they were already executable. Properties shows the current permissions, owner, and group.
+- **Metadata editor** — **Metadata…** from a single item's context menu or the File menu (a
+  separate dialog from Permissions). It lists everything known about the item in sections: **File**
+  (name, location, size, created/modified/accessed dates), **Finder & download info** (tags,
+  Spotlight comment, “Where from” URLs, quarantine), embedded image metadata split into **EXIF**,
+  **GPS**, **TIFF**, **IPTC**, and **XMP**, raw **Extended attributes**, and the read-only
+  **Spotlight** record. Click a value to edit it (dates as `yyyy-MM-dd HH:mm:ss`, tags and keyword
+  lists comma-separated) and press Return to save; ⓧ removes one value, each section's **Clear**
+  removes that section, and **Clear all metadata…** removes everything removable after an inline
+  confirmation. Image edits copy the picture data instead of re-encoding it (JPEG, HEIC); PNG/TIFF
+  fall back to a lossless rewrite. Each write is checked on a temp copy before it replaces the
+  original, so a format that won't drop a field reports it and leaves the file untouched.
+  Orientation and pixel-layout fields are kept by Clear so photos never turn sideways, and image
+  rewrites keep the file's created/modified dates. The label column sizes itself to the longest
+  field name.
+- **Clear metadata in bulk** — **Clear metadata…** from the context menu of several selected items
+  or any folder (or **File ▸ Clear Metadata…**). Choose what to remove — tags and comments,
+  download info (Where from, quarantine), image metadata (EXIF/GPS/IPTC/XMP), and optionally all
+  other extended attributes — and whether to include everything inside selected folders. Nothing
+  changes until you press **Confirm**; progress is shown live, **Stop** ends the run part-way, and
+  the summary reports how many items were checked, how many were cleared, how many had nothing to
+  remove, and any that couldn't be changed. Folders are
+  walked lazily one item at a time; symlinks aren't followed, the contents of apps and other
+  packages are skipped, and attributes macOS protects (`com.apple.provenance`, `com.apple.macl`)
+  are left alone.
 - **Find duplicates** — from the ⋯ menu, File menu, folder background menu, or a folder’s context
   menu. Files are grouped by size, then by a 16 KB head hash, then confirmed with a full SHA-256, so
   only same-size candidates are ever read. Hard links and empty files are not reported. Results show
@@ -243,6 +269,10 @@ used.
 - `Sources/Services/MacMailHandoff.swift` — "Email with Mac Mail": opens the selected files with Mac Mail, which starts a new message with them attached.
 - `Sources/Services/PermissionsService.swift` — `lstat`/`chmod`/`chflags` permission reads and
   writes, owner/group names, Locked flag handling, and recursive apply.
+- `Sources/Services/MetadataService.swift` — metadata reads/writes and the streamed bulk clear: `lstat` dates and
+  `setAttributes`, Finder tags via `NSURL` resource values, `getxattr`/`setxattr`/`removexattr`,
+  ImageIO `CGImageMetadata` tags with `CGImageDestinationCopyImageSource` rewrites through a
+  verified temp file, and `MDItem` Spotlight attributes.
 - `Sources/Services/DuplicateFinder.swift` — size bucketing, head hashing, and streamed SHA-256
   comparison for Find duplicates.
 - `Sources/Services/PasteboardService.swift` — `NSPasteboard` file-URL publishing and change-count
@@ -256,7 +286,7 @@ used.
   with a synchronous flush on quit.
 - `Sources/UI/` — programmatic AppKit: window chrome, tabs, navigation/command/status bars, sidebar,
   file views, Home, Gallery, Network, details and preview panes, Quick Look preview, dialogs
-  (Properties, Permissions, Find duplicates), menus, and theme.
+  (Properties, Permissions, Metadata, Clear metadata, Find duplicates), menus, and theme.
 
 There are no storyboards or XIBs. The only subprocesses are `/usr/bin/bsdtar`, `/usr/bin/ditto`,
 `/usr/bin/zip`, and `NSWorkspace` handoffs to Finder/Terminal.
@@ -295,8 +325,10 @@ mapped into every AppKit app.) Techniques used:
 - Search and Gallery scans have result caps (`250`/`160`), depth limits, and a 6-second deadline.
 - Search keeps no index of its own: it asks the system Spotlight index (which lives in
   `mds`, not in this process) and holds nothing between searches.
-- The preview pane and the Permissions/Find duplicates dialogs are created on demand and released
-  when closed. Duplicate scanning keeps only paths and sizes, reads candidates through one reused
+- The preview pane and the Permissions/Metadata/Clear metadata/Find duplicates dialogs are created on demand and
+  released when closed. The Metadata dialog reads values off the main thread with no cache, reads
+  image headers only (no pixel decode, except a one-off PNG/TIFF rewrite), summarizes extended
+  attributes over 64 KB instead of loading them, and creates rows only for what is visible. Duplicate scanning keeps only paths and sizes, reads candidates through one reused
   1 MB buffer, and stops at 200,000 files or 2 minutes.
 
 Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with throwaway state):
@@ -315,11 +347,11 @@ Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with t
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 65 filesystem, archive (including symlink-target checks), sorting, volume, search-query, duplicate, permission, default-app,
+# 75 filesystem, archive (including symlink-target checks), sorting, volume, search-query, duplicate, permission, metadata (dates, tags, comment, xattrs, JPEG GPS clear and field edit, recursive bulk clear that skips packages, kept file dates, stopping, macOS-managed attributes read-only), default-app,
 # and safety assertions
 "$APP" --self-test
 
-# 56 live-controller assertions: navigation, all five views, sorting, toggles,
+# 60 live-controller assertions: navigation, all five views, sorting, toggles,
 # create/rename/copy/cut/paste (including same-folder cut as a no-op), Undo Delete, marquee selection, Open with (and its default-app
 # submenu), button titles fitting without truncation in every view and dialog, address editing,
 # search (header shows the final count; switching tabs mid-search), dialogs, tabs, keyboard map, Quick Look (keyboard + menu), theme,
@@ -333,7 +365,7 @@ APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacEx
 Screenshots in `docs/screenshots/` were generated with the same harness at 2× scale. The capture
 flags used for documentation include `--location`, `--archive`, `--gallery`, `--network`,
 `--gallery-root`, `--view`, `--theme`, `--details`, `--preview`, `--select-first`, `--search`,
-`--properties`, `--permissions`, and `--duplicates`.
+`--properties`, `--permissions`, `--metadata`, `--clear-metadata`, and `--duplicates`.
 
 Manual end-to-end checks performed: launch to Home, address-bar navigation, breadcrumbs,
 create/rename/copy/cut/paste, Trash and permanent-delete guards, search, tabs and tab close,
@@ -359,6 +391,13 @@ theme switching (light/dark/system), and the full keyboard/menu map.
   reads UTF-8/Latin-1 text and source files up to 4 MB.
 - The permissions editor can only change items you own; it never asks for administrator rights and
   cannot change the owner or group. ACLs are not shown or edited.
+- Attributes macOS manages itself (`com.apple.provenance`, `com.apple.macl`, `com.apple.system.*`)
+  are shown read-only: the system re-adds them, so neither dialog removes them.
+- The Metadata dialog edits one item at a time (bulk is clear-only). Spotlight values are read-only (Spotlight rebuilds
+  them), dates can be edited but not removed, and binary extended attributes can only be removed.
+  Some embedded fields (structured or language-alternative XMP such as `dc:description`) can be
+  removed but not edited. The comment is written as the Spotlight comment attribute; Finder's Get
+  Info may keep showing an older comment it cached in `.DS_Store`.
 - Find duplicates stops after 200,000 files or 2 minutes and then reports partial results.
 - **Always open … with** changes the default per content type, so it applies to every extension
   of that type. macOS sometimes adds its own “change default app?” prompt after the in-app

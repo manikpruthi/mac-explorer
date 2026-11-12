@@ -218,6 +218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fileMenu.addItem(item("New Folder", #selector(BrowserWindowController.newFolderAction(_:)), "n", [.command, .shift]))
         fileMenu.addItem(.separator())
         fileMenu.addItem(item("Permissions…", #selector(BrowserWindowController.permissionsAction(_:))))
+        fileMenu.addItem(item("Metadata…", #selector(BrowserWindowController.metadataAction(_:))))
+        fileMenu.addItem(item("Clear Metadata…", #selector(BrowserWindowController.clearMetadataAction(_:))))
         fileMenu.addItem(item("Find Duplicates…", #selector(BrowserWindowController.findDuplicatesAction(_:))))
         fileMenu.addItem(.separator())
         fileMenu.addItem(item("Close Tab", #selector(BrowserWindowController.closeTabAction(_:)), "w"))
