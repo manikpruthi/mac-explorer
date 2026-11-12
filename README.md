@@ -75,14 +75,19 @@ views, Electron/Chromium components, or third-party dependencies.
   separate dialog from Permissions). It lists everything known about the item in sections: **File**
   (name, location, size, created/modified/accessed dates), **Finder & download info** (tags,
   Spotlight comment, “Where from” URLs, quarantine), embedded image metadata split into **EXIF**,
-  **GPS**, **TIFF**, **IPTC**, and **XMP**, raw **Extended attributes**, and the read-only
+  **GPS**, **TIFF**, **IPTC**, and **XMP**, **Other embedded data** that ImageIO doesn't expose
+  (C2PA/AI content credentials in PNG `caBX` chunks and JPEG APP11 segments, EXIF stored as PNG
+  text such as `Raw profile type APP1`, other PNG text/time/private chunks, JPEG comments and
+  vendor APP segments), raw **Extended attributes**, and the read-only
   **Spotlight** record. Click a value to edit it (dates as `yyyy-MM-dd HH:mm:ss`, tags and keyword
   lists comma-separated) and press Return to save; ⓧ removes one value, each section's **Clear**
   removes that section, and **Clear all metadata…** removes everything removable after an inline
   confirmation. Image edits copy the picture data instead of re-encoding it (JPEG, HEIC); PNG/TIFF
   fall back to a lossless rewrite. Each write is checked on a temp copy before it replaces the
   original, so a format that won't drop a field reports it and leaves the file untouched.
-  Orientation and pixel-layout fields are kept by Clear so photos never turn sideways, and image
+  Other embedded data is removed by copying the file without those blocks: the compressed
+  picture data is copied byte for byte, and the copy must decode to the same size before it
+  replaces the original. Orientation and pixel-layout fields are kept by Clear so photos never turn sideways, and image
   rewrites keep the file's created/modified dates. The label column sizes itself to the longest
   field name.
 - **Clear metadata in bulk** — **Clear metadata…** from the context menu of several selected items
@@ -273,6 +278,8 @@ used.
   `setAttributes`, Finder tags via `NSURL` resource values, `getxattr`/`setxattr`/`removexattr`,
   ImageIO `CGImageMetadata` tags with `CGImageDestinationCopyImageSource` rewrites through a
   verified temp file, and `MDItem` Spotlight attributes.
+- `Sources/Services/ContainerMetadata.swift` — PNG chunk / JPEG segment scanner and streaming
+  stripper for metadata ImageIO doesn't expose (C2PA, text chunks, comments, vendor segments).
 - `Sources/Services/DuplicateFinder.swift` — size bucketing, head hashing, and streamed SHA-256
   comparison for Find duplicates.
 - `Sources/Services/PasteboardService.swift` — `NSPasteboard` file-URL publishing and change-count
@@ -347,7 +354,7 @@ Release 1.4.0 vs 1.3.0, same machine and scenarios (`footprint`, launched with t
 ```bash
 APP="$HOME/Library/Caches/MacExplorerBuild/Mac Explorer.app/Contents/MacOS/MacExplorer"
 
-# 75 filesystem, archive (including symlink-target checks), sorting, volume, search-query, duplicate, permission, metadata (dates, tags, comment, xattrs, JPEG GPS clear and field edit, recursive bulk clear that skips packages, kept file dates, stopping, macOS-managed attributes read-only), default-app,
+# 77 filesystem, archive (including symlink-target checks), sorting, volume, search-query, duplicate, permission, metadata (dates, tags, comment, xattrs, JPEG GPS clear and field edit, recursive bulk clear that skips packages, kept file dates, stopping, macOS-managed attributes read-only, PNG C2PA/text-chunk and JPEG comment stripping), default-app,
 # and safety assertions
 "$APP" --self-test
 

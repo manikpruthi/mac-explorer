@@ -10,6 +10,8 @@ enum EmbeddedSection: String, Sendable, CaseIterable {
     case tiff = "TIFF (device)"
     case iptc = "IPTC"
     case xmp = "XMP"
+    /// PNG chunks / JPEG segments ImageIO doesn't expose (C2PA credentials, text chunks, …).
+    case container = "Other embedded data"
 }
 
 enum MetadataGroupKind: Hashable, Sendable {
@@ -30,6 +32,8 @@ enum MetadataKey: Hashable, Sendable {
     case quarantine
     /// XMP-style path such as `exif:FNumber` or `dc:subject`.
     case embedded(String)
+    /// A `ContainerMetadata.Block` id, e.g. `caBX` or `zTXt:Raw profile type APP1`.
+    case container(String)
     case xattr(String)
     case spotlight(String)
 }
@@ -139,6 +143,30 @@ enum MetadataService {
     }
 
     private static func embeddedGroups(_ path: String) -> [MetadataGroup] {
+        imageIOGroups(path) + containerGroups(path)
+    }
+
+    private static func containerGroups(_ path: String) -> [MetadataGroup] {
+        let blocks = ContainerMetadata.scan(path)
+        guard !blocks.isEmpty else { return [] }
+        let items = blocks.map { block in
+            MetadataItem(
+                key: .container(block.id),
+                label: block.label,
+                value: FormatTools.bytes(Int64(block.size)) + (block.count > 1 ? " in \(block.count) blocks" : ""),
+                removable: true,
+                detail: block.id
+            )
+        }
+        return [MetadataGroup(
+            kind: .embedded(.container),
+            title: EmbeddedSection.container.rawValue,
+            items: items,
+            note: "Blocks stored beside the picture, e.g. AI content credentials. Removing them leaves the pixels untouched."
+        )]
+    }
+
+    private static func imageIOGroups(_ path: String) -> [MetadataGroup] {
         let url = URL(fileURLWithPath: path) as CFURL
         // Header-only read: no pixels are decoded or cached.
         guard let source = CGImageSourceCreateWithURL(url, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -166,7 +194,7 @@ enum MetadataService {
             )
             buckets[section(prefix: prefix, name: name), default: []].append(item)
         }
-        return EmbeddedSection.allCases.compactMap { section in
+        return EmbeddedSection.allCases.filter { $0 != .container }.compactMap { section in
             guard let items = buckets[section], !items.isEmpty else { return nil }
             var group = MetadataGroup(kind: .embedded(section), title: section.rawValue, items: items.sorted { $0.label < $1.label })
             if section == .tiff, items.contains(where: { $0.key == .embedded("tiff:Orientation") }) {
@@ -388,7 +416,7 @@ enum MetadataService {
                 let tag = written.flatMap { CGImageMetadataCopyTagWithPath($0, nil, tagPath as CFString) }
                 return tag.map(describe) == expected ? [] : [tagPath]
             })
-        case .info, .whereFrom, .quarantine, .spotlight:
+        case .info, .whereFrom, .quarantine, .spotlight, .container:
             return "This value can’t be edited."
         }
     }
@@ -397,6 +425,7 @@ enum MetadataService {
     static func remove(_ keys: [MetadataKey], path: String) -> String? {
         var firstError: String?
         var embedded: [String] = []
+        var blocks: Set<String> = []
         for key in keys {
             var error: String?
             switch key {
@@ -407,6 +436,7 @@ enum MetadataService {
             case .quarantine: error = removeXattr(path, quarantineXattr)
             case .xattr(let name): error = removeXattr(path, name)
             case .embedded(let tagPath): embedded.append(tagPath)
+            case .container(let id): blocks.insert(id)
             case .info, .created, .modified, .spotlight: error = "This value can’t be removed."
             }
             if firstError == nil { firstError = error }
@@ -421,6 +451,13 @@ enum MetadataService {
                 return embedded.filter { CGImageMetadataCopyTagWithPath(written, nil, $0 as CFString) != nil }
             })
             if firstError == nil { firstError = error }
+        }
+        // After the ImageIO pass, which may itself have dropped some of these blocks.
+        if !blocks.isEmpty {
+            let present = Set(ContainerMetadata.scan(path).map(\.id)).intersection(blocks)
+            if !present.isEmpty, let error = ContainerMetadata.strip(path, ids: present), firstError == nil {
+                firstError = error
+            }
         }
         return firstError
     }
@@ -482,12 +519,17 @@ enum MetadataService {
             return nil
         }()
         if let outcome { return outcome }
-        // Changing metadata isn't a content edit, so the file keeps its created/modified dates.
-        let dates = (try? FileManager.default.attributesOfItem(atPath: path))?
+        return replace(url, with: temp)
+    }
+
+    /// Swaps a verified temp copy in for the original. Changing metadata isn't a content edit,
+    /// so the file keeps its created/modified dates.
+    static func replace(_ url: URL, with temp: URL) -> String? {
+        let dates = (try? FileManager.default.attributesOfItem(atPath: url.path))?
             .filter { $0.key == .creationDate || $0.key == .modificationDate } ?? [:]
         do {
             _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
-            if !dates.isEmpty { try? FileManager.default.setAttributes(dates, ofItemAtPath: path) }
+            if !dates.isEmpty { try? FileManager.default.setAttributes(dates, ofItemAtPath: url.path) }
             return nil
         } catch {
             return "Couldn’t save “\(url.lastPathComponent)”: \(error.localizedDescription)"

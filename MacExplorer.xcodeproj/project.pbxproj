@@ -159,6 +159,7 @@
 				A1B2C3D4E5F60718293A4B5C /* DirectoryWatcher.swift */,
 				240CBBF630D842A18B4CF86A /* PermissionsService.swift */,
 				A1E0C0DE00000000000000A1 /* MetadataService.swift */,
+				A1E0C0DE00000000000000D1 /* ContainerMetadata.swift */,
 				0713C41E4E814BE09E5FFEAE /* DuplicateFinder.swift */,
 				0DBF284478DF4E4DAFFEAF86 /* SearchService.swift */,
 				7AA46B59E5D17BB7ADD8687B /* ArchiveService.swift */,
@@ -233,6 +234,8 @@
 		3B8E6D4FA2E95C17B4F9A326 /* QuickLookPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A7F5C3E91D84B06A3E8F215 /* QuickLookPreview.swift */; };
 		240CBBF630D842A18B4CF86A /* PermissionsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsService.swift; sourceTree = "<group>"; };
 		296158BD57374DE8BABB5DD0 /* PermissionsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 240CBBF630D842A18B4CF86A /* PermissionsService.swift */; };
+		A1E0C0DE00000000000000D1 /* ContainerMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContainerMetadata.swift; sourceTree = "<group>"; };
+		A1E0C0DE00000000000000D2 /* ContainerMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C0DE00000000000000D1 /* ContainerMetadata.swift */; };
 		A1E0C0DE00000000000000C1 /* BulkMetadataOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BulkMetadataOverlay.swift; sourceTree = "<group>"; };
 		A1E0C0DE00000000000000C2 /* BulkMetadataOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E0C0DE00000000000000C1 /* BulkMetadataOverlay.swift */; };
 		A1E0C0DE00000000000000A1 /* MetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetadataService.swift; sourceTree = "<group>"; };
@@ -327,6 +330,7 @@
 				3B8E6D4FA2E95C17B4F9A326 /* in Sources */,
 				296158BD57374DE8BABB5DD0 /* in Sources */,
 				A1E0C0DE00000000000000A2 /* in Sources */,
+				A1E0C0DE00000000000000D2 /* in Sources */,
 				A1E0C0DE00000000000000B2 /* in Sources */,
 				A1E0C0DE00000000000000C2 /* in Sources */,
 				6792DC14776A45B5ABF5F155 /* in Sources */,

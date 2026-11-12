@@ -395,7 +395,52 @@ enum SelfTest {
         check("image rewrite keeps modified date", keptDate == photoDate, "\(String(describing: keptDate))")
         let stopped = MetadataService.clear(paths: [tree.path], options: [.finder], recursive: true, progress: { _ in }, isCancelled: { true })
         check("bulk clear stops when cancelled", stopped.cancelled && stopped.changed == 0)
+
+        // Blocks ImageIO can't see: C2PA (caBX) and EXIF-as-text (zTXt) in PNG, comments in JPEG.
+        func crc32(_ bytes: [UInt8]) -> UInt32 {
+            var crc: UInt32 = 0xFFFF_FFFF
+            for byte in bytes {
+                crc ^= UInt32(byte)
+                for _ in 0..<8 { crc = crc & 1 == 1 ? (crc >> 1) ^ 0xEDB8_8320 : crc >> 1 }
+            }
+            return ~crc
+        }
+        func chunk(_ type: String, _ data: [UInt8]) -> [UInt8] {
+            let body = Array(type.utf8) + data
+            let length = UInt32(data.count).bigEndian, crc = crc32(body).bigEndian
+            return withUnsafeBytes(of: length) { Array($0) } + body + withUnsafeBytes(of: crc) { Array($0) }
+        }
+        let png = dir.appendingPathComponent("credentials.png")
+        if let context = CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                                   space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue),
+           let image = context.makeImage(),
+           let destination = CGImageDestinationCreateWithURL(png as CFURL, UTType.png.identifier as CFString, 1, nil) {
+            CGImageDestinationAddImage(destination, image, nil)
+            CGImageDestinationFinalize(destination)
+        }
+        if var bytes = try? [UInt8](Data(contentsOf: png)) {
+            let extra = chunk("caBX", Array(repeating: 7, count: 300)) + chunk("zTXt", Array("Raw profile type APP1".utf8) + [0, 0, 1, 2, 3])
+            bytes.insert(contentsOf: extra, at: 8 + 25)  // after the signature and IHDR
+            try? Data(bytes).write(to: png)
+        }
+        let pngBlocks = ContainerMetadata.scan(png.path).map(\.id)
+        let pngError = MetadataService.remove(pngBlocks.map { .container($0) }, path: png.path)
+        check("PNG C2PA and text chunks are found and stripped", pngBlocks.contains("caBX") && pngBlocks.contains("zTXt:Raw profile type APP1")
+              && pngError == nil && ContainerMetadata.scan(png.path).isEmpty
+              && CGImageSourceCreateWithURL(png as CFURL, nil).map(CGImageSourceGetCount) == 1, "\(pngBlocks) \(pngError ?? "")")
+
+        if var bytes = try? [UInt8](Data(contentsOf: photo)) {
+            let comment = Array("made by a test".utf8)
+            bytes.insert(contentsOf: [0xFF, 0xFE, 0, UInt8(comment.count + 2)] + comment, at: 2)
+            try? Data(bytes).write(to: photo)
+        }
+        let jpegBlocks = ContainerMetadata.scan(photo.path).map(\.id)
+        let jpegError = MetadataService.remove([.container("COM")], path: photo.path)
+        check("JPEG comment segment is found and stripped", jpegBlocks == ["COM"] && jpegError == nil
+              && ContainerMetadata.scan(photo.path).isEmpty && item(photo.path, .embedded("tiff:Make"))?.value == "Other",
+              "\(jpegBlocks) \(jpegError ?? "")")
     }
+
 
     /// Read-only checks: they never change a real default app.
     private static func runDefaultAppTests(root: URL) {
